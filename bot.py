@@ -79,7 +79,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sheet.update_cell(cell.row, 2, name)
         sheet.update_cell(cell.row, 3, "Консультация")
         await update.message.reply_text(
-            f"✅ Запись принята!\nИмя: {name}\nУслуга: Консультация\nКогда: {slot}",
+            f"✅ Запись принята! Обращаем внимание, что консультация платная - 120 Euro.\ К сумме может быть добавлен IVA. Оплата производится перeд консультацией. \Подробности уточняйте у @migrallpt \nИмя: {name}\nУслуга: Консультация\nКогда: {slot}",
             reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True)
         )
         await context.bot.send_message(
