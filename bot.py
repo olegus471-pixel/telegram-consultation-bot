@@ -1,4 +1,6 @@
-import os, json, base64
+import os
+import json
+import base64
 from oauth2client.service_account import ServiceAccountCredentials
 import gspread
 
@@ -21,7 +23,7 @@ scope = ["https://spreadsheets.google.com/feeds",
          "https://www.googleapis.com/auth/drive"]
 creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client = gspread.authorize(creds)
-sheet = client.open("Расписание").worksheet("график")  # имя листа с учетом регистра
+sheet = client.open("Расписание").worksheet("График")  # убедитесь, что лист именно "График"
 
 # =======================
 # Главное меню
@@ -38,17 +40,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
+    text = update.message.text.strip()
 
+    # Шаг 1: запрос имени
     if text == "📅 Записаться на консультацию":
         await update.message.reply_text("Введите ваше имя:")
         context.user_data["step"] = "name"
+        return
 
-    elif context.user_data.get("step") == "name":
+    # Шаг 2: выбор слота
+    if context.user_data.get("step") == "name":
         context.user_data["name"] = text
         context.user_data["step"] = "choose_slot"
 
-        # Получаем список слотов
         all_slots = sheet.get_all_values()[1:]  # пропускаем заголовки
         free_slots = [row[0].strip() for row in all_slots if row[1].strip() == ""]
 
@@ -57,32 +61,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.clear()
             return
 
-        # Отправляем кнопки
         slot_buttons = [[s] for s in free_slots]
         await update.message.reply_text(
             "Выберите удобное время:",
             reply_markup=ReplyKeyboardMarkup(slot_buttons, resize_keyboard=True)
         )
+        return
 
-    elif context.user_data.get("step") == "choose_slot":
+    # Шаг 3: запись выбранного слота
+    if context.user_data.get("step") == "choose_slot":
         name = context.user_data["name"]
-        slot = text.strip()
+        slot = text
 
-        # Проверка занятости
         try:
             cell = sheet.find(slot)
         except gspread.CellNotFound:
             await update.message.reply_text("❌ Слот не найден. Попробуйте снова.")
             return
 
-        current_value = sheet.cell(cell.row, 2).value
-        if current_value not in ("", None):
+        if sheet.cell(cell.row, 2).value not in ("", None):
             await update.message.reply_text("❌ Этот слот уже занят. Попробуйте снова.")
             return
 
-        # Запись в таблицу
-        sheet.update_cell(cell.row, 2, name)        # имя клиента
-        sheet.update_cell(cell.row, 3, "Консультация")  # услуга
+        # Обновляем Google Sheet
+        sheet.update_cell(cell.row, 2, name)
+        sheet.update_cell(cell.row, 3, "Консультация")
 
         await update.message.reply_text(
             f"✅ Запись принята!\nИмя: {name}\nУслуга: Консультация\nКогда: {slot}",
@@ -96,12 +99,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         context.user_data.clear()
+        return
 
-    elif text == "ℹ️ Инфо":
+    # Инфо
+    if text == "ℹ️ Инфо":
         await update.message.reply_text("ℹ️ Консультации проходят онлайн. Длительность: 1 час.")
+        return
 
-    else:
-        await update.message.reply_text("Не понял 🤔. Попробуйте снова.")
+    # Неизвестная команда
+    await update.message.reply_text("Не понял 🤔. Попробуйте снова.")
 
 # =======================
 # Запуск бота
