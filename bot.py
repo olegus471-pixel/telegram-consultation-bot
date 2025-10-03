@@ -96,8 +96,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Уведомление админу
         await context.bot.send_message(
-            ADMIN_ID,
-            f"📌 Новая запись:\nИмя: {name}\nУслуга: Консультация\nКогда: {slot}"
+            chat_id=ADMIN_ID,
+            text=f"📌 Новая запись:\nИмя: {name}\nУслуга: Консультация\nКогда: {slot}"
         )
 
         context.user_data.clear()
@@ -112,12 +112,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Не понял 🤔. Попробуйте снова.")
 
 # =======================
-# Запуск бота
+# Запуск бота (PTB v21.x)
 # =======================
-if __name__ == "__main__":
+def main():
     app = Application.builder().token(TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     print("Бот запущен!")
-    app.run_polling()
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+if __name__ == "__main__":
+    main()
