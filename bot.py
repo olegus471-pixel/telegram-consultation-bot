@@ -1,16 +1,12 @@
-import os
-from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-import gspread
+import os, json, base64
 from oauth2client.service_account import ServiceAccountCredentials
+import gspread
 
-# ==== Настройки ====
-TOKEN = os.environ["TOKEN"]
-ADMIN_ID = int(os.environ["ADMIN_ID"])  # твой Telegram ID
+creds_json = base64.b64decode(os.environ["GOOGLE_CREDS"])
+creds_dict = json.loads(creds_json)
 
-# Подключение к Google Sheets
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client = gspread.authorize(creds)
 sheet = client.open("Расписание").график  # таблица "График работы"
 
