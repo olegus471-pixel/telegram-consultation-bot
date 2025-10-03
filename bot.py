@@ -45,7 +45,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     if text == "📅 Записаться на консультацию":
-        await update.message.reply_text("Введите ваше имя в телегам @...:")
+        await update.message.reply_text("Введите ваше имя в телеграм:")
         context.user_data["step"] = "name"
         return
 
