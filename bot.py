@@ -8,7 +8,7 @@ creds_dict = json.loads(creds_json)
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client = gspread.authorize(creds)
-sheet = client.open("Расписание").график  # таблица "График работы"
+sheet = client.open("Расписание").worksheet("график") # таблица "График работы"
 
 # Главное меню
 main_menu = [["📅 Записаться на консультацию", "ℹ️ Инфо"]]
