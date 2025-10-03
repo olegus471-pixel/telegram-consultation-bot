@@ -15,7 +15,7 @@ ADMIN_ID = int(os.environ["ADMIN_ID"])
 PORT = int(os.environ.get("PORT", 10000))
 
 # =======================
-# Подключение к Google Sheets
+# Google Sheets
 # =======================
 creds_json = base64.b64decode(os.environ["GOOGLE_CREDS"])
 creds_dict = json.loads(creds_json)
@@ -25,7 +25,6 @@ scope = ["https://spreadsheets.google.com/feeds",
 creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client = gspread.authorize(creds)
 
-# Убедитесь, что в Google Sheets есть таблица "Расписание" и лист "График"
 sheet = client.open("Расписание").worksheet("График")
 
 # =======================
@@ -117,17 +116,16 @@ if __name__ == "__main__":
 
     print("Бот запущен на Webhook!")
 
-    # Установка webhook для Telegram
+    # Установка webhook
     import asyncio
     async def set_webhook():
         await app.bot.set_webhook(WEBHOOK_URL)
 
     asyncio.run(set_webhook())
 
-    # Запуск webhook сервера
+    # Запуск webhook-сервера
     app.run_webhook(
         listen="0.0.0.0",
         port=PORT,
-        webhook_path="/webhook",
         webhook_url=WEBHOOK_URL
     )
