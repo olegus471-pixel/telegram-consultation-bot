@@ -2,6 +2,13 @@ import os, json, base64
 from oauth2client.service_account import ServiceAccountCredentials
 import gspread
 
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+
+TOKEN = os.environ["TOKEN"]
+ADMIN_ID = int(os.environ["ADMIN_ID"])
+
+# Google Sheets
 creds_json = base64.b64decode(os.environ["GOOGLE_CREDS"])
 creds_dict = json.loads(creds_json)
 
