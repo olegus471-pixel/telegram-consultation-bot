@@ -1,6 +1,7 @@
 import os
 import json
 import base64
+import asyncio
 from oauth2client.service_account import ServiceAccountCredentials
 import gspread
 
@@ -13,6 +14,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 TOKEN = os.environ["TOKEN"]
 ADMIN_ID = int(os.environ["ADMIN_ID"])
 PORT = int(os.environ.get("PORT", 10000))
+WEBHOOK_URL = "https://telegram-consultation-bot.onrender.com/webhook"
 
 # =======================
 # Google Sheets
@@ -105,27 +107,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Не понял 🤔. Попробуйте снова.")
 
 # =======================
-# Запуск бота через Webhook
+# Асинхронный запуск
 # =======================
-if __name__ == "__main__":
-    WEBHOOK_URL = "https://telegram-consultation-bot.onrender.com/webhook"
-
+async def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
+    # Установка webhook (Telegram будет слать обновления на этот URL)
+    await app.bot.set_webhook(WEBHOOK_URL)
+
     print("Бот запущен на Webhook!")
-
-    # Установка webhook
-    import asyncio
-    async def set_webhook():
-        await app.bot.set_webhook(WEBHOOK_URL)
-
-    asyncio.run(set_webhook())
-
-    # Запуск webhook-сервера
-    app.run_webhook(
+    await app.run_webhook(
         listen="0.0.0.0",
         port=PORT,
         webhook_url=WEBHOOK_URL
     )
+
+# =======================
+# Точка входа
+# =======================
+if __name__ == "__main__":
+    asyncio.run(main())
