@@ -1,9 +1,9 @@
 import os
 import json
 import base64
+import asyncio
 from oauth2client.service_account import ServiceAccountCredentials
 import gspread
-import asyncio
 
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -14,7 +14,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 TOKEN = os.environ["TOKEN"]
 ADMIN_ID = int(os.environ["ADMIN_ID"])
 PORT = int(os.environ.get("PORT", 10000))
-WEBHOOK_URL = f"https://telegram-consultation-bot.onrender.com/webhook"
+WEBHOOK_URL = "https://telegram-consultation-bot.onrender.com/webhook"
 
 # =======================
 # Google Sheets
@@ -96,31 +96,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Не понял 🤔. Попробуйте снова.")
 
 # =======================
-# Асинхронный запуск через текущий loop
+# Создаём приложение
 # =======================
 app = Application.builder().token(TOKEN).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
+# =======================
+# Асинхронный запуск (без asyncio.run)
+# =======================
 async def main():
-    # Устанавливаем webhook
     await app.bot.set_webhook(WEBHOOK_URL)
     print("Webhook установлен:", WEBHOOK_URL)
 
-    # Запуск webhook без asyncio.run
     await app.initialize()
-    await app.start_webhook(
+    await app.start()
+    await app.updater.start_webhook(
         listen="0.0.0.0",
         port=PORT,
-        webhook_url=WEBHOOK_URL
+        url_path="webhook",
+        webhook_url=WEBHOOK_URL,
     )
-    print("Бот запущен на Webhook!")
+    print("Бот запущен через Webhook")
 
-    # Навсегда держим приложение
-    await app.updater.start_polling()  # если нужна совместимость с старым PTB
-    # или просто:
-    # await asyncio.Event().wait()  # чтобы loop не завершался
+    # держим процесс живым
+    await asyncio.Event().wait()
 
-# Получаем уже существующий loop Render
+# запускаем в существующем loop
 loop = asyncio.get_event_loop()
 loop.create_task(main())
+loop.run_forever()
