@@ -31,21 +31,21 @@ sheet = client.open("Расписание").worksheet("График")
 # =======================
 # Главное меню
 # =======================
-main_menu = [["📅 Записаться на консультацию", "ℹ️ Инфо"]]
+main_menu = [["📅 Записаться на консультацию Migrall", "ℹ️ Инфо"]]
 
 # =======================
 # Хэндлеры
 # =======================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Привет! Я бот для записи на консультацию.\nВыберите действие:",
+        "Привет! Я бот для записи на консультацию Migrall.\nВыберите действие:",
         reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True)
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     if text == "📅 Записаться на консультацию":
-        await update.message.reply_text("Введите ваше имя:")
+        await update.message.reply_text("Введите ваше имя в телегам @...:")
         context.user_data["step"] = "name"
         return
 
