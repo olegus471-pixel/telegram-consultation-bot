@@ -1,7 +1,6 @@
 import os
 import json
 import base64
-import asyncio
 from oauth2client.service_account import ServiceAccountCredentials
 import gspread
 
@@ -106,26 +105,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("Не понял 🤔. Попробуйте снова.")
 
-# =======================
-# Асинхронный запуск
-# =======================
-async def main():
-    app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Установка webhook (Telegram будет слать обновления на этот URL)
+# =======================
+# Асинхронный запуск без asyncio.run
+# =======================
+app = Application.builder().token(TOKEN).build()
+app.add_handler(CommandHandler("start", start))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+# Устанавливаем webhook
+async def setup_webhook():
     await app.bot.set_webhook(WEBHOOK_URL)
+    print("Webhook установлен:", WEBHOOK_URL)
 
-    print("Бот запущен на Webhook!")
-    await app.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        webhook_url=WEBHOOK_URL
-    )
+# Запуск webhook
+import asyncio
+loop = asyncio.get_event_loop()
+loop.create_task(setup_webhook())
+print("Бот запущен на Webhook!")
 
-# =======================
-# Точка входа
-# =======================
-if __name__ == "__main__":
-    asyncio.run(main())
+app.run_webhook(
+    listen="0.0.0.0",
+    port=PORT,
+    webhook_url=WEBHOOK_URL
+)
