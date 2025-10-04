@@ -3,10 +3,10 @@ import json
 import base64
 import asyncio
 import datetime
-from google.oauth2.service_account import Credentials
+from oauth2client.service_account import ServiceAccountCredentials
 import gspread
 from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
+from google.oauth2.service_account import Credentials
 
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -17,25 +17,21 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 TOKEN = os.environ["TOKEN"]
 ADMIN_ID = int(os.environ["ADMIN_ID"])
 PORT = int(os.environ.get("PORT", 10000))
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL") or "https://telegram-consultation-bot.onrender.com/webhook"
+WEBHOOK_URL = "https://telegram-consultation-bot.onrender.com/webhook"
 
 # =======================
-# Google Sheets (Расписание)
+# Google Sheets
 # =======================
 sheets_creds_json = base64.b64decode(os.environ["GOOGLE_SHEETS_CREDS"])
 sheets_creds_dict = json.loads(sheets_creds_json)
 
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive"
-]
-
-sheets_credentials = Credentials.from_service_account_info(sheets_creds_dict, scopes=SCOPES)
-gc = gspread.authorize(sheets_credentials)
-sheet = gc.open("Расписание").worksheet("График")
+sheets_scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+sheets_creds = ServiceAccountCredentials.from_json_keyfile_dict(sheets_creds_dict, sheets_scope)
+sheets_client = gspread.authorize(sheets_creds)
+sheet = sheets_client.open("Расписание").worksheet("График")
 
 # =======================
-# Google Calendar / Meet
+# Google Calendar
 # =======================
 calendar_creds_json = base64.b64decode(os.environ["GOOGLE_CALENDAR_CREDS"])
 calendar_creds_dict = json.loads(calendar_creds_json)
@@ -65,13 +61,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = user.id
     username = user.username if user.username else f"{user.first_name} {user.last_name or ''}"
 
-    # =======================
-    # Начало записи
-    # =======================
+    # === Начало записи ===
     if text == "📅 Записаться на консультацию Migrall":
         all_slots = sheet.get_all_values()
         for row in all_slots[1:]:
-            if str(user_id) in row:
+            if str(user_id) in row:  # уже есть запись
                 await update.message.reply_text("❌ У вас уже есть активная запись. Перенос возможен, но не новая запись.")
                 return
 
@@ -79,15 +73,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["step"] = "name"
         return
 
-    # =======================
-    # Получаем имя
-    # =======================
+    # === Получаем имя ===
     if context.user_data.get("step") == "name":
         context.user_data["name"] = text
         context.user_data["step"] = "choose_slot"
 
         all_slots = sheet.get_all_values()[1:]
-        free_slots = [row[1].strip() for row in all_slots if row[2].strip() == ""]  # B = слот, C = имя
+        free_slots = [row[1].strip() for row in all_slots if row[2].strip() == ""]  # колонка B = слот, C = имя
         if not free_slots:
             await update.message.reply_text("❌ Нет свободных слотов.")
             context.user_data.clear()
@@ -100,9 +92,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # =======================
-    # Выбираем слот
-    # =======================
+    # === Выбираем слот ===
     if context.user_data.get("step") == "choose_slot":
         name = context.user_data["name"]
         slot = text
@@ -123,11 +113,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sheet.update_cell(cell.row, 6, "Консультация") # услуга
         sheet.update_cell(cell.row, 7, "0")          # переносы
         sheet.update_cell(cell.row, 8, "0")          # напоминание
-        sheet.update_cell(cell.row, 9, "")           # email
+        sheet.update_cell(cell.row, 9, "")           # email для ссылки
         sheet.update_cell(cell.row, 10, "")          # meet_link
 
         context.user_data["slot_row"] = cell.row
 
+        # Спрашиваем про ссылку Meet
         await update.message.reply_text(
             "Хотите, чтобы ссылка на Google Meet была выслана прямо сейчас или перед встречей?",
             reply_markup=ReplyKeyboardMarkup([["Сейчас", "Перед встречей"]], resize_keyboard=True)
@@ -135,9 +126,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["step"] = "meet_option"
         return
 
-    # =======================
-    # Выбор Meet
-    # =======================
+    # === Выбор Meet ===
     if context.user_data.get("step") == "meet_option":
         row = context.user_data["slot_row"]
         if text == "Сейчас":
@@ -146,16 +135,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         elif text == "Перед встречей":
             await update.message.reply_text("✅ Отлично, ссылка будет выслана перед встречей.")
-            sheet.update_cell(row, 10, "pending")  # отметка для отправки позже
+            sheet.update_cell(row, 10, "pending")  # отметка, что нужно выслать позже
             context.user_data.clear()
             return
         else:
             await update.message.reply_text("Выберите вариант: Сейчас или Перед встречей.")
             return
 
-    # =======================
-    # Получаем email и создаём Meet
-    # =======================
+    # === Получаем email и создаём Meet ===
     if context.user_data.get("step") == "get_email":
         email = text.strip()
         row = context.user_data["slot_row"]
@@ -163,51 +150,53 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             slot_time = datetime.datetime.strptime(slot_time_str, "%d.%m.%Y, %H:%M")
         except ValueError:
-            await update.message.reply_text("❌ Формат даты некорректный. Уточните у администратора.")
+            await update.message.reply_text("❌ Неверный формат даты/времени слота.")
             context.user_data.clear()
             return
 
-        # создаём событие
+        # создаем событие в календаре
         event = {
             'summary': 'Консультация Migrall',
             'description': 'Консультация по переезду.',
             'start': {'dateTime': slot_time.isoformat(), 'timeZone': 'Europe/Lisbon'},
-            'end': {'dateTime': (slot_time + datetime.timedelta(hours=1)).isoformat(), 'timeZone': 'Europe/Lisbon')},
-            'attendees': [{'email': email}]
+            'end': {'dateTime': (slot_time + datetime.timedelta(hours=1)).isoformat(), 'timeZone': 'Europe/Lisbon'}
         }
+        created_event = calendar_service.events().insert(
+            calendarId=CALENDAR_ID,
+            body=event,
+            conferenceDataVersion=0
+        ).execute()
 
-        try:
-            created_event = calendar_service.events().insert(calendarId=CALENDAR_ID, body=event).execute()
-            meet_link = created_event.get('hangoutLink', 'Ссылка не доступна')
-            sheet.update_cell(row, 9, email)
-            sheet.update_cell(row, 10, meet_link)
-            await update.message.reply_text(f"✅ Ссылка на Google Meet выслана на {email}:\n{meet_link}")
-        except HttpError as e:
-            await update.message.reply_text(f"❌ Ошибка при создании встречи: {e}")
+        meet_link = created_event.get('hangoutLink', 'Ссылка не доступна')
+        sheet.update_cell(row, 9, email)
+        sheet.update_cell(row, 10, meet_link)
+
+        await update.message.reply_text(f"✅ Ссылка на Google Meet выслана на {email}:\n{meet_link}")
         context.user_data.clear()
         return
 
-    # =======================
-    # Инфо
-    # =======================
+    # === Инфо ===
     if text == "ℹ️ Инфо":
         await update.message.reply_text(
-            """Консультация по легализации в Португалии 🇵🇹 и Испании 🇪🇸
+            """Консультация по легализации в Португалии 🇵🇹 и Испании 🇪🇸 
 
-✅ Анализ кейса
-✅ Варианты легализации
-✅ Пошаговый план
-✅ Ответы на вопросы
+🔹 Что разберем на консультации?
+✅ Анализируем ваш кейс
+✅ Рассматриваем варианты легализации
+✅ Прописываем пошаговый план
+✅ Отвечаем на все вопросы
 
 💰 Стоимость: 120 €
-⏳ Длительность: 1 час"""
+⏳ Длительность: 1 час
+
+*К сумме может быть добавлен НДС 23%"""
         )
         return
 
     await update.message.reply_text("Не понял 🤔. Попробуйте снова.")
 
 # =======================
-# Фоновые задачи
+# Фоновая задача: напоминания и Meet перед встречей
 # =======================
 async def background_jobs(app: Application):
     while True:
@@ -228,7 +217,7 @@ async def background_jobs(app: Application):
             except ValueError:
                 continue
 
-            # Напоминание 24ч
+            # Напоминание за 24 часа
             if reminded == "0" and 0 < (slot_time - now).total_seconds() <= 86400:
                 try:
                     await app.bot.send_message(int(user_id), f"⏰ Напоминаем! У вас консультация {slot_time_str}.")
@@ -237,7 +226,7 @@ async def background_jobs(app: Application):
                 except:
                     pass
 
-            # Meet за 15 минут
+            # Отправка Meet за 15 минут для "Перед встречей"
             if meet_status == "pending" and 0 < (slot_time - now).total_seconds() <= 900:
                 email = row[9].strip() if len(row) > 9 else None
                 if email:
@@ -245,22 +234,22 @@ async def background_jobs(app: Application):
                         'summary': 'Консультация Migrall',
                         'description': 'Консультация по переезду.',
                         'start': {'dateTime': slot_time.isoformat(), 'timeZone': 'Europe/Lisbon'},
-                        'end': {'dateTime': (slot_time + datetime.timedelta(hours=1)).isoformat(), 'timeZone': 'Europe/Lisbon')},
-                        'attendees': [{'email': email}]
+                        'end': {'dateTime': (slot_time + datetime.timedelta(hours=1)).isoformat(), 'timeZone': 'Europe/Lisbon'}
                     }
-                    try:
-                        created_event = calendar_service.events().insert(calendarId=CALENDAR_ID, body=event).execute()
-                        meet_link = created_event.get('hangoutLink', 'Ссылка не доступна')
-                        cell = sheet.find(slot_time_str)
-                        sheet.update_cell(cell.row, 10, meet_link)
-                        await app.bot.send_message(int(user_id), f"✅ Ссылка на Google Meet:\n{meet_link}")
-                    except HttpError:
-                        pass
+                    created_event = calendar_service.events().insert(
+                        calendarId=CALENDAR_ID,
+                        body=event,
+                        conferenceDataVersion=0
+                    ).execute()
+                    meet_link = created_event.get('hangoutLink', 'Ссылка не доступна')
+                    cell = sheet.find(slot_time_str)
+                    sheet.update_cell(cell.row, 10, meet_link)
+                    await app.bot.send_message(int(user_id), f"✅ Ссылка на Google Meet:\n{meet_link}")
 
         await asyncio.sleep(60)
 
 # =======================
-# Создаём приложение
+# Приложение
 # =======================
 app = Application.builder().token(TOKEN).build()
 app.add_handler(CommandHandler("start", start))
@@ -271,8 +260,6 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 # =======================
 async def main():
     await app.bot.set_webhook(WEBHOOK_URL)
-    print("Webhook установлен:", WEBHOOK_URL)
-
     await app.initialize()
     await app.start()
     await app.updater.start_webhook(
@@ -281,9 +268,7 @@ async def main():
         url_path="webhook",
         webhook_url=WEBHOOK_URL,
     )
-
     asyncio.create_task(background_jobs(app))
-
     await asyncio.Event().wait()
 
 loop = asyncio.get_event_loop()
