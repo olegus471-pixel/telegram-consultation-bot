@@ -25,21 +25,34 @@ WEBHOOK_URL = "https://telegram-consultation-bot.onrender.com/webhook"
 sheets_creds_json = base64.b64decode(os.environ["GOOGLE_SHEETS_CREDS"])
 sheets_creds_dict = json.loads(sheets_creds_json)
 
-sheets_scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+sheets_scope = [
+    "https://spreadsheets.google.com/feeds",
+    "https://www.googleapis.com/auth/drive"
+]
 sheets_creds = ServiceAccountCredentials.from_json_keyfile_dict(sheets_creds_dict, sheets_scope)
 sheets_client = gspread.authorize(sheets_creds)
 sheet = sheets_client.open("Расписание").worksheet("График")
 
 # =======================
-# Google Calendar
+# Google Calendar (Meet)
 # =======================
 calendar_creds_json = base64.b64decode(os.environ["GOOGLE_CALENDAR_CREDS"])
 calendar_creds_dict = json.loads(calendar_creds_json)
 
-calendar_scopes = ['https://www.googleapis.com/auth/calendar']
-calendar_credentials = Credentials.from_service_account_info(calendar_creds_dict, scopes=calendar_scopes)
-calendar_service = build('calendar', 'v3', credentials=calendar_credentials)
-CALENDAR_ID = 'ops@migrall.com'
+calendar_scopes = [
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/calendar.events"
+]
+
+# ⚙️ Используем делегирование для пользователя ops@migrall.com
+calendar_credentials = Credentials.from_service_account_info(
+    calendar_creds_dict,
+    scopes=calendar_scopes,
+    subject="ops@migrall.com"
+)
+
+calendar_service = build("calendar", "v3", credentials=calendar_credentials)
+CALENDAR_ID = "ops@migrall.com"
 
 # =======================
 # Главное меню
@@ -110,10 +123,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sheet.update_cell(cell.row, 3, name)         # имя
         sheet.update_cell(cell.row, 4, username)     # username
         sheet.update_cell(cell.row, 5, str(user_id)) # user_id
-        sheet.update_cell(cell.row, 6, "Консультация") # услуга
+        sheet.update_cell(cell.row, 6, "Консультация")
         sheet.update_cell(cell.row, 7, "0")          # переносы
         sheet.update_cell(cell.row, 8, "0")          # напоминание
-        sheet.update_cell(cell.row, 9, "")           # email для ссылки
+        sheet.update_cell(cell.row, 9, "")           # email
         sheet.update_cell(cell.row, 10, "")          # meet_link
 
         context.user_data["slot_row"] = cell.row
@@ -135,7 +148,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         elif text == "Перед встречей":
             await update.message.reply_text("✅ Отлично, ссылка будет выслана перед встречей.")
-            sheet.update_cell(row, 10, "pending")  # отметка, что нужно выслать позже
+            sheet.update_cell(row, 10, "pending")
             context.user_data.clear()
             return
         else:
@@ -147,6 +160,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         email = text.strip()
         row = context.user_data["slot_row"]
         slot_time_str = sheet.cell(row, 2).value.strip()
+
         try:
             slot_time = datetime.datetime.strptime(slot_time_str, "%d.%m.%Y, %H:%M")
         except ValueError:
@@ -154,24 +168,36 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.clear()
             return
 
-        # создаем событие в календаре
-        event = {
-            'summary': 'Консультация Migrall',
-            'description': 'Консультация по переезду.',
-            'start': {'dateTime': slot_time.isoformat(), 'timeZone': 'Europe/Lisbon'},
-            'end': {'dateTime': (slot_time + datetime.timedelta(hours=1)).isoformat(), 'timeZone': 'Europe/Lisbon'}
-        }
-        created_event = calendar_service.events().insert(
-            calendarId=CALENDAR_ID,
-            body=event,
-            conferenceDataVersion=0
-        ).execute()
+        try:
+            event = {
+                "summary": "Консультация Migrall",
+                "description": "Консультация по переезду.",
+                "start": {"dateTime": slot_time.isoformat(), "timeZone": "Europe/Lisbon"},
+                "end": {"dateTime": (slot_time + datetime.timedelta(hours=1)).isoformat(), "timeZone": "Europe/Lisbon"},
+                "attendees": [{"email": email}],
+                "conferenceData": {
+                    "createRequest": {
+                        "requestId": f"migrall-{user_id}-{int(datetime.datetime.now().timestamp())}",
+                        "conferenceSolutionKey": {"type": "hangoutsMeet"},
+                    }
+                },
+            }
 
-        meet_link = created_event.get('hangoutLink', 'Ссылка не доступна')
-        sheet.update_cell(row, 9, email)
-        sheet.update_cell(row, 10, meet_link)
+            created_event = calendar_service.events().insert(
+                calendarId=CALENDAR_ID,
+                body=event,
+                conferenceDataVersion=1
+            ).execute()
 
-        await update.message.reply_text(f"✅ Ссылка на Google Meet выслана на {email}:\n{meet_link}")
+            meet_link = created_event.get("hangoutLink", "Ссылка не доступна")
+            sheet.update_cell(row, 9, email)
+            sheet.update_cell(row, 10, meet_link)
+
+            await update.message.reply_text(f"✅ Ссылка на Google Meet выслана на {email}:\n{meet_link}")
+
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка при создании встречи: {e}")
+
         context.user_data.clear()
         return
 
@@ -226,25 +252,36 @@ async def background_jobs(app: Application):
                 except:
                     pass
 
-            # Отправка Meet за 15 минут для "Перед встречей"
+            # Отправка Meet за 15 минут до встречи
             if meet_status == "pending" and 0 < (slot_time - now).total_seconds() <= 900:
                 email = row[9].strip() if len(row) > 9 else None
                 if email:
-                    event = {
-                        'summary': 'Консультация Migrall',
-                        'description': 'Консультация по переезду.',
-                        'start': {'dateTime': slot_time.isoformat(), 'timeZone': 'Europe/Lisbon'},
-                        'end': {'dateTime': (slot_time + datetime.timedelta(hours=1)).isoformat(), 'timeZone': 'Europe/Lisbon'}
-                    }
-                    created_event = calendar_service.events().insert(
-                        calendarId=CALENDAR_ID,
-                        body=event,
-                        conferenceDataVersion=0
-                    ).execute()
-                    meet_link = created_event.get('hangoutLink', 'Ссылка не доступна')
-                    cell = sheet.find(slot_time_str)
-                    sheet.update_cell(cell.row, 10, meet_link)
-                    await app.bot.send_message(int(user_id), f"✅ Ссылка на Google Meet:\n{meet_link}")
+                    try:
+                        event = {
+                            "summary": "Консультация Migrall",
+                            "description": "Консультация по переезду.",
+                            "start": {"dateTime": slot_time.isoformat(), "timeZone": "Europe/Lisbon"},
+                            "end": {"dateTime": (slot_time + datetime.timedelta(hours=1)).isoformat(), "timeZone": "Europe/Lisbon"},
+                            "attendees": [{"email": email}],
+                            "conferenceData": {
+                                "createRequest": {
+                                    "requestId": f"migrall-{user_id}-{int(datetime.datetime.now().timestamp())}",
+                                    "conferenceSolutionKey": {"type": "hangoutsMeet"},
+                                }
+                            },
+                        }
+                        created_event = calendar_service.events().insert(
+                            calendarId=CALENDAR_ID,
+                            body=event,
+                            conferenceDataVersion=1
+                        ).execute()
+
+                        meet_link = created_event.get("hangoutLink", "Ссылка не доступна")
+                        cell = sheet.find(slot_time_str)
+                        sheet.update_cell(cell.row, 10, meet_link)
+                        await app.bot.send_message(int(user_id), f"✅ Ссылка на Google Meet:\n{meet_link}")
+                    except:
+                        pass
 
         await asyncio.sleep(60)
 
