@@ -156,7 +156,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'conferenceData': {
                     'createRequest': {
                         'requestId': f'migrall-{user_id}',
-                        'conferenceSolutionKey': {'type': 'hangoutsMeet'}
+                        'conferenceSolutionKey': {'type': 'videoHangouts'}
                     }
                 }
             }
@@ -252,7 +252,7 @@ async def background_jobs(app: Application):
                     'conferenceData': {
                         'createRequest': {
                             'requestId': f'migrall-{user_id}',
-                            'conferenceSolutionKey': {'type': 'hangoutsMeet'}
+                            'conferenceSolutionKey': {'type': 'videoHangouts'}
                         }
                     }
                 }
