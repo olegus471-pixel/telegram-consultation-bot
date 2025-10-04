@@ -133,6 +133,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Спрашиваем про ссылку Meet
         await update.message.reply_text(
+            f"✅ {name}, ваша запись подтверждена на {slot}.\n\n"
             "Хотите, чтобы ссылка на Google Meet была выслана прямо сейчас или перед встречей?",
             reply_markup=ReplyKeyboardMarkup([["Сейчас", "Перед встречей"]], resize_keyboard=True)
         )
@@ -193,7 +194,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sheet.update_cell(row, 9, email)
             sheet.update_cell(row, 10, meet_link)
 
-            await update.message.reply_text(f"✅ Ссылка на Google Meet выслана на {email}:\n{meet_link}")
+            await update.message.reply_text(f"✅ Ссылка на Google Meet выслана на {email}:\n{meet_link}"
+                                           "За 24 часа до встречи вы получите сообщение с напоминанием."
+                                           )
 
         except Exception as e:
             await update.message.reply_text(f"❌ Ошибка при создании встречи: {e}")
