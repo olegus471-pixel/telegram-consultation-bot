@@ -2,6 +2,7 @@ import os
 import json
 import base64
 import asyncio
+import datetime
 from oauth2client.service_account import ServiceAccountCredentials
 import gspread
 
@@ -44,20 +45,35 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
+    user = update.message.from_user
+    user_id = user.id
+    username = user.username if user.username else f"{user.first_name} {user.last_name or ''}"
+
+    # 1. Начало записи
     if text == "📅 Записаться на консультацию Migrall":
-        await update.message.reply_text("Введите ваше имя в телеграм:")
+        # Проверяем, есть ли уже запись
+        all_slots = sheet.get_all_values()
+        for row in all_slots[1:]:
+            if str(user_id) in row:  # ищем user_id в строке
+                await update.message.reply_text("❌ У вас уже есть активная запись. Перенос возможен, но не новая запись.")
+                return
+
+        await update.message.reply_text("Введите ваше имя (для записи):")
         context.user_data["step"] = "name"
         return
 
+    # 2. Получаем имя
     if context.user_data.get("step") == "name":
         context.user_data["name"] = text
         context.user_data["step"] = "choose_slot"
+
         all_slots = sheet.get_all_values()[1:]
-        free_slots = [row[0].strip() for row in all_slots if row[1].strip() == ""]
+        free_slots = [row[1].strip() for row in all_slots if row[2].strip() == ""]  # B = слот, C = имя
         if not free_slots:
             await update.message.reply_text("❌ Нет свободных слотов.")
             context.user_data.clear()
             return
+
         slot_buttons = [[s] for s in free_slots]
         await update.message.reply_text(
             "Выберите удобное время:",
@@ -65,6 +81,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # 3. Запись слота
     if context.user_data.get("step") == "choose_slot":
         name = context.user_data["name"]
         slot = text
@@ -73,29 +90,42 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except gspread.CellNotFound:
             await update.message.reply_text("❌ Слот не найден. Попробуйте снова.")
             return
-        if sheet.cell(cell.row, 2).value not in ("", None):
+
+        # проверяем, что колонка C (имя) пуста
+        if sheet.cell(cell.row, 3).value not in ("", None):
             await update.message.reply_text("❌ Этот слот уже занят. Попробуйте снова.")
             return
-        sheet.update_cell(cell.row, 2, name)
-        sheet.update_cell(cell.row, 3, "Консультация")
+
+        # Записываем данные
+        sheet.update_cell(cell.row, 3, name)        # имя (C)
+        sheet.update_cell(cell.row, 4, username)    # username (D)
+        sheet.update_cell(cell.row, 5, str(user_id)) # user_id (E)
+        sheet.update_cell(cell.row, 6, "Консультация") # услуга (F)
+        sheet.update_cell(cell.row, 7, "0")         # переносы (G)
+        sheet.update_cell(cell.row, 8, "0")         # напоминание (H)
+
         await update.message.reply_text(
             f"""✅ Запись принята! 
-            Обращаем внимание, что консультация платная - 120 Euro. К сумме может быть добавлен IVA. 
-            Оплата производится перeд консультацией. Подробности уточняйте у @migrallpt \nИмя: {name}\nУслуга: Консультация\nКогда: {slot}""",
+Обращаем внимание, что консультация платная - 120 Euro. К сумме может быть добавлен IVA. 
+Оплата производится перед консультацией. Подробности уточняйте у @migrallpt 
+
+Имя: {name}
+Username: @{username}
+Услуга: Консультация
+Когда: {slot}""",
             reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True)
         )
         await context.bot.send_message(
             ADMIN_ID,
-            f"📌 Новая запись:\nИмя: {name}\nУслуга: Консультация\nКогда: {slot}"
+            f"📌 Новая запись:\nИмя: {name}\nUsername: @{username}\nУслуга: Консультация\nКогда: {slot}"
         )
         context.user_data.clear()
         return
 
+    # 4. Инфо
     if text == "ℹ️ Инфо":
         await update.message.reply_text(
-                 """Консультация по легализации в Португалии 🇵🇹 и Испании 🇪🇸 
-
-Консультация поможет вам разобраться со всеми нюансами переезда и составить четкий план действий.
+            """Консультация по легализации в Португалии 🇵🇹 и Испании 🇪🇸 
 
 🔹 Что разберем на консультации?
 ✅ Анализируем именно ваш кейс
@@ -108,18 +138,45 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 *К сумме может быть добавлен НДС 23%
 
-📌 Как записаться?
-1️⃣ Согласовываем удобное время
-2️⃣ Оплачиваете (перевод на РФ карту, крипта, IBAN в евро)
-3️⃣ Перед встречей отправляем ссылку (Google Meet)
-4️⃣ Проводим консультацию
-5️⃣ После остаемся на связи для уточняющих вопросов
-
 📩 Готовы записаться или остались вопросы? Пишите – поможем!"""
         )
         return
 
     await update.message.reply_text("Не понял 🤔. Попробуйте снова.")
+
+# =======================
+# Задача: Напоминания за 24 часа
+# =======================
+async def reminder_job(app: Application):
+    while True:
+        all_slots = sheet.get_all_values()[1:]
+        now = datetime.datetime.now()
+        for row in all_slots:
+            slot_time_str = row[1].strip()  # колонка B
+            username = row[3].strip() if len(row) > 3 else ""
+            user_id = row[4].strip() if len(row) > 4 else ""
+            reminded = row[7].strip() if len(row) > 7 else "0"
+
+            if not slot_time_str or not user_id:
+                continue
+
+            try:
+                slot_time = datetime.datetime.strptime(slot_time_str, "%Y-%m-%d %H:%M")
+            except ValueError:
+                continue
+
+            if reminded == "0" and 0 < (slot_time - now).total_seconds() <= 86400:  # 24 часа
+                try:
+                    await app.bot.send_message(
+                        int(user_id),
+                        f"⏰ Напоминаем! У вас консультация {slot_time_str}. Ждем вас!"
+                    )
+                    cell = sheet.find(slot_time_str)
+                    sheet.update_cell(cell.row, 8, "1")  # помечаем напоминание
+                except Exception as e:
+                    print("Ошибка отправки напоминания:", e)
+
+        await asyncio.sleep(3600)  # проверка каждый час
 
 # =======================
 # Создаём приложение
@@ -129,7 +186,7 @@ app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
 # =======================
-# Асинхронный запуск (без asyncio.run)
+# Асинхронный запуск
 # =======================
 async def main():
     await app.bot.set_webhook(WEBHOOK_URL)
@@ -144,6 +201,9 @@ async def main():
         webhook_url=WEBHOOK_URL,
     )
     print("Бот запущен через Webhook")
+
+    # запускаем задачу-напоминатель
+    asyncio.create_task(reminder_job(app))
 
     # держим процесс живым
     await asyncio.Event().wait()
