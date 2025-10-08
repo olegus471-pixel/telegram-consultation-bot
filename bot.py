@@ -1,20 +1,19 @@
 import os
 import json
 import base64
-import asyncio
-import datetime
 import logging
 
 from oauth2client.service_account import ServiceAccountCredentials
 import gspread
-from googleapiclient.discovery import build
 from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
 
-from telegram import Update, ReplyKeyboardMarkup
+from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
@@ -40,15 +39,13 @@ sheets_creds = ServiceAccountCredentials.from_json_keyfile_dict(sheets_creds_dic
 sheets_client = gspread.authorize(sheets_creds)
 sheet = sheets_client.open("Расписание").worksheet("График")
 
-# ============= GOOGLE CALENDAR =============
+# ============= GOOGLE CALENDAR (если нужно) =============
 calendar_creds_json = base64.b64decode(os.environ["GOOGLE_CALENDAR_CREDS"])
 calendar_creds_dict = json.loads(calendar_creds_json)
-
 calendar_scopes = [
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/calendar.events"
 ]
-
 calendar_credentials = Credentials.from_service_account_info(
     calendar_creds_dict,
     scopes=calendar_scopes,
@@ -64,6 +61,7 @@ main_menu = [
     ["ℹ️ Инфо"]
 ]
 
+
 # ============= /start =============
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
@@ -72,20 +70,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True)
     )
 
+
 # ============= ОСНОВНАЯ ЛОГИКА =============
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     user = update.message.from_user
-    user_id = user.id
+    user_id = str(user.id)
+    username = f"@{user.username}" if user.username else "—"
 
     # === Моя запись ===
     if text == "📖 Моя запись":
         all_slots = sheet.get_all_values()[1:]
         for row in all_slots:
-            if str(user_id) in row:
-                slot_time = row[1]
-                status = row[2]
-                await update.message.reply_text(f"📅 Ваша запись: {slot_time}\nСтатус: {status}")
+            if row[5] == user_id:
+                day, slot, status = row[0], row[1], row[2]
+                await update.message.reply_text(f"📅 {day} — {slot}\nСтатус: {status}")
                 await start(update, context)
                 return
         await update.message.reply_text("ℹ️ У вас нет активной записи.")
@@ -95,12 +94,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # === Отмена записи ===
     if text == "❌ Отмена":
         all_slots = sheet.get_all_values()[1:]
-        for row in all_slots:
-            if str(user_id) in row:
+        for i, row in enumerate(all_slots, start=2):
+            if row[5] == user_id:
                 slot_time = row[1]
-                sheet.update_cell(all_slots.index(row)+2, 3, "")
-                sheet.update_cell(all_slots.index(row)+2, 4, "")
-                sheet.update_cell(all_slots.index(row)+2, 5, "")
+                for col in range(3, 7):
+                    sheet.update_cell(i, col, "")
                 await update.message.reply_text(f"🗑 Ваша запись на {slot_time} отменена.")
                 await start(update, context)
                 return
@@ -111,51 +109,62 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # === Перенос ===
     if text == "🔁 Перенос":
         all_slots = sheet.get_all_values()[1:]
-        user_rows = [r for r in all_slots if str(user_id) in r]
-        if not user_rows:
+        user_row = next((r for r in all_slots if r[5] == user_id), None)
+        if not user_row:
             await update.message.reply_text("❌ У вас нет записи для переноса.")
             await start(update, context)
             return
-        free_slots = [r[1].strip() for r in all_slots if r[2].strip() == ""]
+        free_slots = [r[1] for r in all_slots if r[2].strip() == ""]
         if not free_slots:
             await update.message.reply_text("❌ Нет доступных слотов для переноса.")
             await start(update, context)
             return
-        slot_buttons = [[s] for s in free_slots]
+        buttons = [[s] for s in free_slots]
         await update.message.reply_text(
             "Выберите новое время для переноса:",
-            reply_markup=ReplyKeyboardMarkup(slot_buttons, resize_keyboard=True)
+            reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True)
         )
         context.user_data["step"] = "transfer"
         return
 
+    # === Перенос (шаг 2) ===
     if context.user_data.get("step") == "transfer":
         new_slot = text
         try:
             cell = sheet.find(new_slot)
-        except gspread.CellNotFound:
+        except:
             await update.message.reply_text("❌ Такой слот не найден.")
             await start(update, context)
             return
 
         all_slots = sheet.get_all_values()[1:]
-        for row in all_slots:
-            if str(user_id) in row:
-                old_row = all_slots.index(row) + 2
-                if sheet.cell(cell.row, 3).value.strip() != "":
-                    await update.message.reply_text("❌ Этот слот уже занят.")
-                    await start(update, context)
-                    return
-                sheet.update_cell(old_row, 3, "")
-                sheet.update_cell(old_row, 4, "")
-                sheet.update_cell(old_row, 5, "")
-                sheet.update_cell(cell.row, 3, "Подтверждено (перенос)")
-                sheet.update_cell(cell.row, 4, row[4])
-                sheet.update_cell(cell.row, 5, str(user_id))
-                await update.message.reply_text(f"✅ Запись перенесена на {new_slot}.")
-                await start(update, context)
-                return
-        await update.message.reply_text("❌ У вас нет записи для переноса.")
+        user_row_index = None
+        for i, row in enumerate(all_slots, start=2):
+            if row[5] == user_id:
+                user_row_index = i
+                break
+
+        if not user_row_index:
+            await update.message.reply_text("❌ У вас нет записи для переноса.")
+            await start(update, context)
+            return
+
+        if sheet.cell(cell.row, 3).value.strip() != "":
+            await update.message.reply_text("❌ Этот слот уже занят.")
+            await start(update, context)
+            return
+
+        # перенос
+        sheet.update_cell(cell.row, 3, "Подтверждено (перенос)")
+        sheet.update_cell(cell.row, 4, sheet.cell(user_row_index, 4).value)
+        sheet.update_cell(cell.row, 5, sheet.cell(user_row_index, 5).value)
+        sheet.update_cell(cell.row, 6, sheet.cell(user_row_index, 6).value)
+
+        # очистка старого
+        for col in range(3, 7):
+            sheet.update_cell(user_row_index, col, "")
+
+        await update.message.reply_text(f"✅ Запись перенесена на {new_slot}.")
         await start(update, context)
         return
 
@@ -180,15 +189,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("step") == "ask_name":
         context.user_data["full_name"] = text
         all_slots = sheet.get_all_values()[1:]
-        free_slots = [r[1].strip() for r in all_slots if r[2].strip() == ""]
+        free_slots = [r[1] for r in all_slots if r[2].strip() == ""]
         if not free_slots:
             await update.message.reply_text("❌ Нет свободных слотов.")
             await start(update, context)
             return
-        slot_buttons = [[s] for s in free_slots]
+        buttons = [[s] for s in free_slots]
         await update.message.reply_text(
             f"Спасибо, {text}! Теперь выберите удобное время:",
-            reply_markup=ReplyKeyboardMarkup(slot_buttons, resize_keyboard=True)
+            reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True)
         )
         context.user_data["step"] = "choose_slot"
         return
@@ -198,8 +207,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         slot = text
         try:
             cell = sheet.find(slot)
-        except gspread.CellNotFound:
-            await update.message.reply_text("❌ Слот не найден. Попробуйте снова.")
+        except:
+            await update.message.reply_text("❌ Слот не найден.")
             await start(update, context)
             return
 
@@ -208,75 +217,78 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await start(update, context)
             return
 
-        full_name = context.user_data.get("full_name", "Без имени")
+        full_name = context.user_data.get("full_name")
 
-        # Временная блокировка
+        # Запись в таблицу
         sheet.update_cell(cell.row, 3, "Ожидает подтверждения")
         sheet.update_cell(cell.row, 4, full_name)
-        sheet.update_cell(cell.row, 5, str(user_id))
+        sheet.update_cell(cell.row, 5, username)
+        sheet.update_cell(cell.row, 6, user_id)
 
         await update.message.reply_text(
             "📨 Запрос на запись отправлен!\nОжидайте подтверждения администратора.\n\n"
             "Консультация проводится после оплаты 💶"
         )
 
-        # Уведомление администратору
-        admin_buttons = [
-            [f"✅ Подтвердить {user_id} {cell.row}", f"❌ Отказать {user_id} {cell.row}"]
-        ]
+        # Inline кнопки для админа
+        admin_keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Подтвердить", callback_data=f"approve|{user_id}|{cell.row}"),
+                InlineKeyboardButton("❌ Отказать", callback_data=f"reject|{user_id}|{cell.row}")
+            ]
+        ])
+
         await context.bot.send_message(
             ADMIN_ID,
-            f"📩 Пользователь {full_name} ({user_id}) хочет записаться на {slot}.",
-            reply_markup=ReplyKeyboardMarkup(admin_buttons, resize_keyboard=True)
+            f"📩 Пользователь {full_name} ({username}, {user_id}) хочет записаться на {slot}.",
+            reply_markup=admin_keyboard
         )
 
-        await start(update, context)
-        return
-
-    # === Действия админа ===
-    if text.startswith("✅ Подтвердить"):
-        try:
-            _, uid, row = text.split()
-            uid, row = int(uid), int(row)
-            slot_time_str = sheet.cell(row, 2).value
-            sheet.update_cell(row, 3, "Подтверждено")
-            await context.bot.send_message(uid, f"✅ Ваша запись на {slot_time_str} подтверждена!")
-            await update.message.reply_text(f"✅ Подтверждено: пользователь {uid}, слот {slot_time_str}")
-        except Exception as e:
-            await update.message.reply_text(f"⚠️ Ошибка подтверждения: {e}")
-        await start(update, context)
-        return
-
-    if text.startswith("❌ Отказать"):
-        try:
-            _, uid, row = text.split()
-            uid, row = int(uid), int(row)
-            slot_time_str = sheet.cell(row, 2).value
-            sheet.update_cell(row, 3, "")
-            sheet.update_cell(row, 4, "")
-            sheet.update_cell(row, 5, "")
-            await context.bot.send_message(uid, f"❌ Слот {slot_time_str} не подтверждён.")
-            await update.message.reply_text(f"❌ Отказано пользователю {uid}, слот {slot_time_str}")
-        except Exception as e:
-            await update.message.reply_text(f"⚠️ Ошибка отказа: {e}")
         await start(update, context)
         return
 
     await update.message.reply_text("🤔 Не понял команду.")
     await start(update, context)
 
-# ============= ЗАПУСК БОТА =============
+
+# ============= CALLBACK ОТ АДМИНА =============
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    action, user_id, row = query.data.split('|')
+    user_id = int(user_id)
+    row = int(row)
+    slot_time = sheet.cell(row, 2).value
+
+    if action == "approve":
+        sheet.update_cell(row, 3, "Подтверждено")
+        await context.bot.send_message(user_id, f"✅ Ваша запись на {slot_time} подтверждена!")
+        await query.edit_message_text(f"✅ Подтверждено: {user_id}, слот {slot_time}")
+
+    elif action == "reject":
+        for col in range(3, 7):
+            sheet.update_cell(row, col, "")
+        await context.bot.send_message(user_id, f"❌ Слот {slot_time} не подтверждён.")
+        await query.edit_message_text(f"❌ Отказано пользователю {user_id}, слот {slot_time}")
+
+
+# ============= ЗАПУСК =============
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CallbackQueryHandler(handle_callback))
+
     logger.info("🚀 Бот запущен в режиме webhook")
+
     app.run_webhook(
         listen="0.0.0.0",
         port=PORT,
         url_path="webhook",
         webhook_url=WEBHOOK_URL,
     )
+
 
 if __name__ == "__main__":
     main()
