@@ -44,7 +44,6 @@ calendar_scopes = [
     "https://www.googleapis.com/auth/calendar.events"
 ]
 
-# ⚙️ Используем делегирование для пользователя ops@migrall.com
 calendar_credentials = Credentials.from_service_account_info(
     calendar_creds_dict,
     scopes=calendar_scopes,
@@ -74,6 +73,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = user.id
     username = user.username if user.username else f"{user.first_name} {user.last_name or ''}"
 
+    # === Отмена ===
+    if text == "Отмена":
+        await update.message.reply_text("❌ Действие отменено.", reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True))
+        context.user_data.clear()
+        return
+
     # === Начало записи ===
     if text == "📅 Записаться на консультацию Migrall":
         all_slots = sheet.get_all_values()
@@ -82,31 +87,45 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ У вас уже есть активная запись. Перенос возможен, но не новая запись.")
                 return
 
-        await update.message.reply_text("Введите ваше имя (для записи):")
+        await update.message.reply_text("Введите ваше имя (для записи):", reply_markup=ReplyKeyboardMarkup([["Отмена"]], resize_keyboard=True))
         context.user_data["step"] = "name"
         return
 
     # === Получаем имя ===
     if context.user_data.get("step") == "name":
+        if text in ["ℹ️ Инфо", "📅 Записаться на консультацию Migrall", "Отмена"]:
+            await update.message.reply_text("❌ Запись отменена.", reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True))
+            context.user_data.clear()
+            return
+
+        if len(text) < 2 or any(c.isdigit() for c in text):
+            await update.message.reply_text("❌ Пожалуйста, введите корректное имя (без цифр).")
+            return
+
         context.user_data["name"] = text
         context.user_data["step"] = "choose_slot"
 
         all_slots = sheet.get_all_values()[1:]
         free_slots = [row[1].strip() for row in all_slots if row[2].strip() == ""]  # колонка B = слот, C = имя
         if not free_slots:
-            await update.message.reply_text("❌ Нет свободных слотов.")
+            await update.message.reply_text("❌ Нет свободных слотов.", reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True))
             context.user_data.clear()
             return
 
-        slot_buttons = [[s] for s in free_slots]
+        slot_buttons = [[s] for s in free_slots] + [["Отмена"]]
         await update.message.reply_text(
-            "Выберите удобное время:",
+            "Выберите удобное время (или нажмите Отмена):",
             reply_markup=ReplyKeyboardMarkup(slot_buttons, resize_keyboard=True)
         )
         return
 
     # === Выбираем слот ===
     if context.user_data.get("step") == "choose_slot":
+        if text == "Отмена":
+            await update.message.reply_text("❌ Запись отменена.", reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True))
+            context.user_data.clear()
+            return
+
         name = context.user_data["name"]
         slot = text
         try:
@@ -120,25 +139,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         # Записываем данные
-        sheet.update_cell(cell.row, 3, name)         # имя
-        sheet.update_cell(cell.row, 4, username)     # username
-        sheet.update_cell(cell.row, 5, str(user_id)) # user_id
+        sheet.update_cell(cell.row, 3, name)
+        sheet.update_cell(cell.row, 4, username)
+        sheet.update_cell(cell.row, 5, str(user_id))
         sheet.update_cell(cell.row, 6, "Консультация")
-        sheet.update_cell(cell.row, 7, "0")          # переносы
-        sheet.update_cell(cell.row, 8, "0")          # напоминание
-        sheet.update_cell(cell.row, 9, "")           # email
-        sheet.update_cell(cell.row, 10, "")          # meet_link
+        sheet.update_cell(cell.row, 7, "0")
+        sheet.update_cell(cell.row, 8, "0")
+        sheet.update_cell(cell.row, 9, "")
+        sheet.update_cell(cell.row, 10, "")
 
         context.user_data["slot_row"] = cell.row
 
-        # Спрашиваем про ссылку Meet
         await update.message.reply_text(
             f"✅ {name}, ваша запись подтверждена на {slot}.\n\n"
-    "Обращаю внимание, что консультация будет проведена только после оплаты.\n"
-    "- Стоимость консультации 120 Евро (может быть добавлен НДС 23%).\n"
-    "- Если Вы еще не оплатили консультацию, напишите в @migrallpt.\n"
-    "- Хотите, чтобы ссылка на Google Meet была выслана прямо сейчас или перед встречей?",
-            reply_markup=ReplyKeyboardMarkup([["Сейчас", "Перед встречей"]], resize_keyboard=True)
+            "Обращаю внимание, что консультация будет проведена только после оплаты.\n"
+            "- Стоимость консультации 120 Евро (может быть добавлен НДС 23%).\n"
+            "- Если Вы еще не оплатили консультацию, напишите в @migrallpt.\n"
+            "- Хотите, чтобы ссылка на Google Meet была выслана прямо сейчас или перед встречей?",
+            reply_markup=ReplyKeyboardMarkup([["Сейчас", "Перед встречей"], ["Отмена"]], resize_keyboard=True)
         )
         context.user_data["step"] = "meet_option"
         return
@@ -146,12 +164,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # === Выбор Meet ===
     if context.user_data.get("step") == "meet_option":
         row = context.user_data["slot_row"]
+
+        if text == "Отмена":
+            await update.message.reply_text("❌ Запись отменена.", reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True))
+            context.user_data.clear()
+            return
+
         if text == "Сейчас":
-            await update.message.reply_text("Введите вашу электронную почту для отправки ссылки:")
+            await update.message.reply_text("Введите вашу электронную почту для отправки ссылки:", reply_markup=ReplyKeyboardMarkup([["Отмена"]], resize_keyboard=True))
             context.user_data["step"] = "get_email"
             return
         elif text == "Перед встречей":
-            await update.message.reply_text("✅ Отлично, ссылка будет выслана перед встречей.")
+            await update.message.reply_text("✅ Отлично, ссылка будет выслана перед встречей.", reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True))
             sheet.update_cell(row, 10, "pending")
             context.user_data.clear()
             return
@@ -161,6 +185,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # === Получаем email и создаём Meet ===
     if context.user_data.get("step") == "get_email":
+        if text == "Отмена":
+            await update.message.reply_text("❌ Отправка отменена.", reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True))
+            context.user_data.clear()
+            return
+
         email = text.strip()
         row = context.user_data["slot_row"]
         slot_time_str = sheet.cell(row, 2).value.strip()
@@ -197,12 +226,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sheet.update_cell(row, 9, email)
             sheet.update_cell(row, 10, meet_link)
 
-            await update.message.reply_text(f"✅ Ссылка на Google Meet выслана на {email}:\n{meet_link}"
-                                           "За 24 часа до встречи вы получите сообщение с напоминанием."
-                                           )
-
+            await update.message.reply_text(f"✅ Ссылка на Google Meet выслана на {email}:\n{meet_link}\nЗа 24 часа до встречи вы получите напоминание.",
+                                            reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True))
         except Exception as e:
-            await update.message.reply_text(f"❌ Ошибка при создании встречи: {e}")
+            await update.message.reply_text(f"❌ Ошибка при создании встречи: {e}", reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True))
 
         context.user_data.clear()
         return
@@ -236,7 +263,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    await update.message.reply_text("Не понял 🤔. Попробуйте снова.")
+    await update.message.reply_text("Не понял 🤔. Попробуйте снова.", reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True))
 
 # =======================
 # Фоновая задача: напоминания и Meet перед встречей
