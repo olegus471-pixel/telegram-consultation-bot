@@ -84,8 +84,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for row in all_slots:
             if str(user_id) in row:
                 slot_time = row[1]
-                status = row[3]
+                status = row[2]
                 await update.message.reply_text(f"📅 Ваша запись: {slot_time}\nСтатус: {status}")
+                await start(update, context)
                 return
         await update.message.reply_text("ℹ️ У вас нет активной записи.")
         await start(update, context)
@@ -199,10 +200,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cell = sheet.find(slot)
         except gspread.CellNotFound:
             await update.message.reply_text("❌ Слот не найден. Попробуйте снова.")
+            await start(update, context)
             return
 
         if sheet.cell(cell.row, 3).value.strip() != "":
             await update.message.reply_text("❌ Этот слот уже занят.")
+            await start(update, context)
             return
 
         full_name = context.user_data.get("full_name", "Без имени")
@@ -218,74 +221,55 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         # Уведомление администратору
+        admin_buttons = [
+            [f"✅ Подтвердить {user_id} {cell.row}", f"❌ Отказать {user_id} {cell.row}"]
+        ]
         await context.bot.send_message(
             ADMIN_ID,
-            f"📩 Пользователь {full_name} ({user_id}) хочет записаться на {slot}.\nПодтвердить или отказать?",
-            reply_markup=ReplyKeyboardMarkup(
-                [[f"✅ Подтвердить {user_id} {cell.row}", f"❌ Отказать {user_id} {cell.row}"]],
-                resize_keyboard=True
-            )
+            f"📩 Пользователь {full_name} ({user_id}) хочет записаться на {slot}.",
+            reply_markup=ReplyKeyboardMarkup(admin_buttons, resize_keyboard=True)
         )
 
-        context.user_data.clear()
+        await start(update, context)
         return
 
     # === Действия админа ===
     if text.startswith("✅ Подтвердить"):
-        _, uid, row = text.split()
-        uid, row = int(uid), int(row)
-        slot_time_str = sheet.cell(row, 2).value
-        sheet.update_cell(row, 3, "Подтверждено")
-        await context.bot.send_message(uid, f"✅ Ваша запись на {slot_time_str} подтверждена!")
-        await update.message.reply_text(f"✅ Подтверждено: пользователь {uid}, слот {slot_time_str}")
+        try:
+            _, uid, row = text.split()
+            uid, row = int(uid), int(row)
+            slot_time_str = sheet.cell(row, 2).value
+            sheet.update_cell(row, 3, "Подтверждено")
+            await context.bot.send_message(uid, f"✅ Ваша запись на {slot_time_str} подтверждена!")
+            await update.message.reply_text(f"✅ Подтверждено: пользователь {uid}, слот {slot_time_str}")
+        except Exception as e:
+            await update.message.reply_text(f"⚠️ Ошибка подтверждения: {e}")
+        await start(update, context)
         return
 
     if text.startswith("❌ Отказать"):
-        _, uid, row = text.split()
-        uid, row = int(uid), int(row)
-        slot_time_str = sheet.cell(row, 2).value
-        sheet.update_cell(row, 3, "")
-        sheet.update_cell(row, 4, "")
-        sheet.update_cell(row, 5, "")
-        await context.bot.send_message(uid, f"❌ Слот {slot_time_str} не подтверждён.")
-        await update.message.reply_text(f"❌ Отказано пользователю {uid}, слот {slot_time_str}")
+        try:
+            _, uid, row = text.split()
+            uid, row = int(uid), int(row)
+            slot_time_str = sheet.cell(row, 2).value
+            sheet.update_cell(row, 3, "")
+            sheet.update_cell(row, 4, "")
+            sheet.update_cell(row, 5, "")
+            await context.bot.send_message(uid, f"❌ Слот {slot_time_str} не подтверждён.")
+            await update.message.reply_text(f"❌ Отказано пользователю {uid}, слот {slot_time_str}")
+        except Exception as e:
+            await update.message.reply_text(f"⚠️ Ошибка отказа: {e}")
+        await start(update, context)
         return
 
     await update.message.reply_text("🤔 Не понял команду.")
     await start(update, context)
-
-# ============= ФОНОВАЯ ЗАДАЧА =============
-async def background_jobs(app: Application):
-    while True:
-        all_slots = sheet.get_all_values()[1:]
-        now = datetime.datetime.now()
-        for row in all_slots:
-            if len(row) < 9:
-                continue
-            slot_time_str = row[1].strip()
-            user_id = row[4].strip()
-            reminded = row[8].strip() if len(row) > 8 else "0"
-            if not slot_time_str or not user_id:
-                continue
-            try:
-                slot_time = datetime.datetime.strptime(slot_time_str, "%d.%m.%Y, %H:%M")
-            except ValueError:
-                continue
-            if reminded == "0" and 0 < (slot_time - now).total_seconds() <= 86400:
-                try:
-                    await app.bot.send_message(int(user_id), f"⏰ Напоминаем: у вас консультация {slot_time_str}.")
-                    cell = sheet.find(slot_time_str)
-                    sheet.update_cell(cell.row, 8, "1")
-                except:
-                    pass
-        await asyncio.sleep(60)
 
 # ============= ЗАПУСК БОТА =============
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.job_queue.run_repeating(lambda _: asyncio.create_task(background_jobs(app)), interval=60, first=5)
     logger.info("🚀 Бот запущен в режиме webhook")
     app.run_webhook(
         listen="0.0.0.0",
