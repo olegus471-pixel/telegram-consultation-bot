@@ -132,9 +132,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["step"] = "choose_slot"
 
         all_slots = sheet.get_all_values()[1:]
-        free_slots = [row[1].strip() for row in all_slots if len(row) > 2 and row[2].strip() == ""]
+        now = datetime.datetime.now()
+        free_slots = []
+        for row in all_slots:
+            if len(row) > 2 and row[2].strip() == "":
+                try:
+                    slot_time_str = row[1].strip()
+                    slot_time = datetime.datetime.strptime(slot_time_str, "%d.%m.%Y, %H:%M")
+                    if slot_time > now:
+                        free_slots.append(slot_time_str)
+                except ValueError:
+                    continue
+
         if not free_slots:
-            await update.message.reply_text("❌ Нет свободных слотов.", reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True))
+            await update.message.reply_text(
+                "❌ Нет свободных слотов на будущее.",
+                reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True)
+            )
             context.user_data.clear()
             return
 
@@ -210,13 +224,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "🔁 Перенести запись":
         current_row, slot_time_str = find_user_booking(user_id)
         if not current_row:
-            await update.message.reply_text("❌ У вас нет активной записи для переноса.", reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True))
+            await update.message.reply_text(
+                "❌ У вас нет активной записи для переноса.",
+                reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True)
+            )
             return
 
         all_slots = sheet.get_all_values()[1:]
-        free_slots = [row[1].strip() for row in all_slots if row[2].strip() == ""]
+        now = datetime.datetime.now()
+        free_slots = []
+        for row in all_slots:
+            if len(row) > 2 and row[2].strip() == "":
+                try:
+                    slot_time_str = row[1].strip()
+                    slot_time = datetime.datetime.strptime(slot_time_str, "%d.%m.%Y, %H:%M")
+                    if slot_time > now:
+                        free_slots.append(slot_time_str)
+                except ValueError:
+                    continue
+
         if not free_slots:
-            await update.message.reply_text("❌ Нет свободных слотов для переноса.", reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True))
+            await update.message.reply_text(
+                "❌ Нет свободных слотов для переноса на будущее.",
+                reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True)
+            )
             return
 
         context.user_data["step"] = "reschedule"
@@ -274,7 +305,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "❌ Отменить запись":
         current_row, slot_time_str = find_user_booking(user_id)
         if not current_row:
-            await update.message.reply_text("❌ У вас нет активной записи для отмены.", reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True))
+            await update.message.reply_text(
+                "❌ У вас нет активной записи для отмены.",
+                reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True)
+            )
             return
 
         try:
@@ -283,7 +317,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             username = sheet.cell(cell.row, 4).value
             for col in range(3, 11):
                 sheet.update_cell(cell.row, col, "")
-            await update.message.reply_text(f"✅ Ваша запись на {slot_time_str} отменена.", reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True))
+            await update.message.reply_text(
+                f"✅ Ваша запись на {slot_time_str} отменена.",
+                reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True)
+            )
 
             # 🔔 Уведомление админу
             await context.bot.send_message(
@@ -291,7 +328,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"❌ Отмена записи\n👤 {name}\n📅 {slot_time_str}\n🧑‍💻 {username} ({user_id})"
             )
         except Exception as e:
-            await update.message.reply_text(f"⚠️ Ошибка при отмене записи: {e}", reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True))
+            await update.message.reply_text(
+                f"⚠️ Ошибка при отмене записи: {e}",
+                reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True)
+            )
         return
 
     # === Инфо ===
@@ -314,7 +354,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # === Если ничего не подошло ===
-    await update.message.reply_text("Не понял 🤔. Попробуйте снова.", reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True))
+    await update.message.reply_text(
+        "Не понял 🤔. Попробуйте снова.",
+        reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True)
+    )
 
 # =======================
 # Приложение
