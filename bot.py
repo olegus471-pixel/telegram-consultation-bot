@@ -43,14 +43,13 @@ sheets_creds = ServiceAccountCredentials.from_json_keyfile_dict(sheets_creds_dic
 sheets_client = gspread.authorize(sheets_creds)
 sheet = sheets_client.open("Расписание").worksheet("График")
 
-# ============= Google Calendar (Meet) and Gmail =============
+# ============= Google Calendar (Meet) =============
 calendar_creds_json = base64.b64decode(os.environ["GOOGLE_CALENDAR_CREDS"])
 calendar_creds_dict = json.loads(calendar_creds_json)
 
 calendar_scopes = [
     "https://www.googleapis.com/auth/calendar",
-    "https://www.googleapis.com/auth/calendar.events",
-    "https://www.googleapis.com/auth/gmail.send"  # Added for sending emails
+    "https://www.googleapis.com/auth/calendar.events"
 ]
 
 calendar_credentials = Credentials.from_service_account_info(
@@ -59,7 +58,6 @@ calendar_credentials = Credentials.from_service_account_info(
     subject="ops@migrall.com"
 )
 calendar_service = build("calendar", "v3", credentials=calendar_credentials)
-gmail_service = build("gmail", "v1", credentials=calendar_credentials)
 CALENDAR_ID = "ops@migrall.com"
 
 # ============= МЕНЮ =============
@@ -99,19 +97,6 @@ def find_user_booking_sync(user_id: int):
 
 async def find_user_booking(user_id: int):
     return await run_in_thread(find_user_booking_sync, user_id)
-
-async def send_email(to_email: str, subject: str, body: str):
-    """Отправляет email через Gmail API."""
-    message = {
-        "raw": base64.urlsafe_b64encode(
-            f"From: ops@migrall.com\nTo: {to_email}\nSubject: {subject}\n\n{body}".encode()
-        ).decode()
-    }
-    try:
-        await run_in_thread(lambda: gmail_service.users().messages().send(userId="me", body=message).execute())
-        logger.info(f"Email sent to {to_email}")
-    except Exception as e:
-        logger.error(f"Ошибка отправки email на {to_email}: {e}")
 
 # ============= /start =============
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -159,7 +144,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         context.user_data["await_meet_creation"] = {"row": row_idx, "slot": slot, "user_id": str(user_id), "full_name": row[3] if len(row) > 3 else ""}
         await update.message.reply_text(
-            "Ссылка на встречу ещё не создана. Хотите получить её сейчас?",
+            "Хотите, чтобы ссылка на Google Meet была выслана прямо сейчас или перед встречей?",
             reply_markup=ReplyKeyboardMarkup([["🔗 Получить сейчас", "⏰ За 15 минут до встречи"]], resize_keyboard=True)
         )
         return
@@ -336,7 +321,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 try:
                     await context.bot.send_message(
                         int(user_id_cell),
-                        f"✅ Ваша запись на {slot_time} подтверждена!\nХотите получить ссылку на Google Meet сейчас или за 15 минут до начала?",
+                        f"✅ Ваша запись на {slot_time} подтверждена!\nХотите, чтобы ссылка на Google Meet была выслана прямо сейчас или перед встречей?",
                         reply_markup=ReplyKeyboardMarkup([["🔗 Получить сейчас", "⏰ За 15 минут до встречи"]], resize_keyboard=True)
                     )
                 except Exception as e:
@@ -396,10 +381,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("⚠️ Неверный формат времени слота. Обратитесь к администратору.", reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True))
                 return
             event_end = event_start + datetime.timedelta(hours=1)
-            request_id = f"migrall-{row_idx}-{int(datetime.datetime.now().timestamp())}"
+            request_id = f"migrall-{user_id}-{int(datetime.datetime.now().timestamp())}"
             event_body = {
-                "summary": f"Консультация Migrall — {full_name}",
-                "description": f"Консультация с {full_name}",
+                "summary": "Консультация Migrall",
+                "description": "Консультация по переезду.",
                 "start": {"dateTime": event_start.isoformat(), "timeZone": "Europe/Lisbon"},
                 "end": {"dateTime": event_end.isoformat(), "timeZone": "Europe/Lisbon"},
                 "attendees": [{"email": email}],
@@ -418,21 +403,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ).execute())
                 meet_link = event.get("hangoutLink") or ""
                 await run_in_thread(sheet.update_cell, row_idx, 10, meet_link)
-                await context.bot.send_message(user_id, f"🔗 Ваша ссылка на Google Meet: {meet_link}")
-                await send_email(
-                    email,
-                    "Ваша консультация Migrall — Ссылка на Google Meet",
-                    f"Здравствуйте, {full_name}!\n\nВаша консультация запланирована на {slot}.\nСсылка на Google Meet: {meet_link}\n\nС уважением,\nКоманда Migrall"
+                await run_in_thread(sheet.update_cell, row_idx, 9, email)
+                await context.bot.send_message(
+                    user_id,
+                    f"✅ Ссылка на Google Meet выслана на {email}:\n{meet_link}\n\n"
+                    "За 24 часа до встречи вы получите сообщение с напоминанием."
                 )
-                await update.message.reply_text("✅ Ссылка создана и отправлена на ваш email и в чат.", reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True))
+                await update.message.reply_text("✅ Ссылка создана и отправлена в чат.", reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True))
             except Exception as e:
-                logger.error(f"Ошибка создания события или отправки: {e}")
+                logger.error(f"Ошибка создания события: {e}")
                 await update.message.reply_text(f"⚠️ Ошибка создания события: {e}", reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True))
             return
         else:  # later
             try:
-                await run_in_thread(sheet.update_cell, row_idx, 9, "pending")
-                await update.message.reply_text("✅ Email сохранён. Ссылка будет отправлена за 15 минут до встречи на ваш email и в чат.", reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True))
+                await run_in_thread(sheet.update_cell, row_idx, 9, email)
+                await run_in_thread(sheet.update_cell, row_idx, 10, "pending")
+                await update.message.reply_text(
+                    "✅ Email сохранён. Ссылка будет отправлена за 15 минут до встречи в чат.",
+                    reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True)
+                )
             except Exception as e:
                 logger.error(f"Ошибка записи pending: {e}")
                 await update.message.reply_text(f"⚠️ Ошибка: {e}", reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True))
@@ -441,7 +430,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # === Если не распознали команду ===
     await update.message.reply_text("Не понял команду — попробуйте ещё раз.", reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True))
 
-# ============= ФОНОВАЯ ЗАДАЧА (создание Meet за 15 минут) =============
+# ============= ФОНОВАЯ ЗАДАЧА (создание Meet за 15 минут и напоминания) =============
 async def background_jobs(app: Application):
     try:
         all_rows = await run_in_thread(sheet.get_all_values)
@@ -453,20 +442,28 @@ async def background_jobs(app: Application):
     for i, row in enumerate(all_rows[1:], start=2):
         status = row[2].strip() if len(row) > 2 else ""
         email = row[6].strip() if len(row) > 6 else ""
-        remind_flag = row[8].strip() if len(row) > 8 else ""
+        remind_flag = row[8].strip() if len(row) > 8 else "0"
         link = row[9].strip() if len(row) > 9 else ""
         slot_text = row[1].strip() if len(row) > 1 else ""
-        full_name = row[3].strip() if len(row) > 3 else ""
-        if status == "Подтверждено" and email and remind_flag == "pending" and not link:
+        user_id = row[5].strip() if len(row) > 5 else ""
+        if status == "Подтверждено" and user_id:
             slot_dt = parse_slot_datetime(slot_text)
             if not slot_dt:
                 continue
             seconds_to = (slot_dt - now).total_seconds()
-            if 0 < seconds_to <= 900:
-                request_id = f"migrall-{i}-{int(datetime.datetime.now().timestamp())}"
+            # Напоминание за 24 часа
+            if remind_flag == "0" and 0 < seconds_to <= 86400:
+                try:
+                    await app.bot.send_message(int(user_id), f"⏰ Напоминаем! У вас консультация {slot_text}.")
+                    await run_in_thread(sheet.update_cell, i, 9, "1")
+                except Exception as e:
+                    logger.error(f"Ошибка отправки напоминания для row {i}: {e}")
+            # Отправка Meet за 15 минут до встречи
+            if email and link == "pending" and 0 < seconds_to <= 900:
+                request_id = f"migrall-{user_id}-{int(datetime.datetime.now().timestamp())}"
                 event_body = {
-                    "summary": f"Консультация Migrall — {full_name}",
-                    "description": f"Автоматически создано за 15 минут до встречи",
+                    "summary": "Консультация Migrall",
+                    "description": "Консультация по переезду.",
                     "start": {"dateTime": slot_dt.isoformat(), "timeZone": "Europe/Lisbon"},
                     "end": {"dateTime": (slot_dt + datetime.timedelta(hours=1)).isoformat(), "timeZone": "Europe/Lisbon"},
                     "attendees": [{"email": email}],
@@ -485,17 +482,9 @@ async def background_jobs(app: Application):
                     ).execute())
                     meet_link = event.get("hangoutLink") or ""
                     await run_in_thread(sheet.update_cell, i, 10, meet_link)
-                    await run_in_thread(sheet.update_cell, i, 9, "sent")
-                    user_id = row[5].strip() if len(row) > 5 else ""
-                    if user_id:
-                        await app.bot.send_message(int(user_id), f"🔗 Автоматическая отправка — ваша ссылка на Google Meet:\n{meet_link}")
-                    await send_email(
-                        email,
-                        "Ваша консультация Migrall — Ссылка на Google Meet",
-                        f"Здравствуйте, {full_name}!\n\nВаша консультация запланирована на {slot_text}.\nСсылка на Google Meet: {meet_link}\n\nС уважением,\nКоманда Migrall"
-                    )
+                    await app.bot.send_message(int(user_id), f"🔗 Автоматическая отправка — ваша ссылка на Google Meet:\n{meet_link}")
                 except Exception as e:
-                    logger.error(f"Ошибка создания события или отправки в background для row {i}: {e}")
+                    logger.error(f"Ошибка создания события в background для row {i}: {e}")
     return
 
 # ============= ЗАПУСК БОТА =============
