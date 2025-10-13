@@ -4,31 +4,40 @@ import base64
 import asyncio
 import datetime
 import logging
-from concurrent.futures import ThreadPoolExecutor
 import re
-from oauth2client.service_account import ServiceAccountCredentials
+from concurrent.futures import ThreadPoolExecutor
+
 import gspread
-from googleapiclient.discovery import build
+from oauth2client.service_account import ServiceAccountCredentials
 from google.oauth2.service_account import Credentials
-from telegram import Update, ReplyKeyboardMarkup
+from googleapiclient.discovery import build
+
+from telegram import (
+    Update,
+    ReplyKeyboardMarkup,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
 
-# ============= НАСТРОЙКИ =============
-TOKEN = os.environ["TOKEN"]
-ADMIN_ID = int(os.environ["ADMIN_ID"])
-PORT = int(os.environ.get("PORT", 10000))
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://telegram-consultation-bot.onrender.com/webhook")
+# ========== Настройки и логирование ==========
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 executor = ThreadPoolExecutor(max_workers=6)
 
-# ============= Google Sheets =============
+TOKEN = os.environ["TOKEN"]
+ADMIN_ID = int(os.environ["ADMIN_ID"])
+PORT = int(os.environ.get("PORT", 10000))
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://telegram-consultation-bot.onrender.com/webhook")
+
+# ========== Google Sheets (gspread) ==========
 sheets_creds_json = base64.b64decode(os.environ["GOOGLE_SHEETS_CREDS"])
 sheets_creds_dict = json.loads(sheets_creds_json)
 sheets_scope = [
@@ -39,7 +48,7 @@ sheets_creds = ServiceAccountCredentials.from_json_keyfile_dict(sheets_creds_dic
 sheets_client = gspread.authorize(sheets_creds)
 sheet = sheets_client.open("Расписание").worksheet("График")
 
-# ============= Google Calendar (Meet) =============
+# ========== Google Calendar ==========
 calendar_creds_json = base64.b64decode(os.environ["GOOGLE_CALENDAR_CREDS"])
 calendar_creds_dict = json.loads(calendar_creds_json)
 calendar_scopes = [
@@ -52,122 +61,142 @@ calendar_credentials = Credentials.from_service_account_info(
 calendar_service = build("calendar", "v3", credentials=calendar_credentials)
 CALENDAR_ID = "ops@migrall.com"
 
-# ============= УТИЛИТЫ =============
+# ========== Константы / регулярки ==========
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+DATE_FORMAT = "%d.%m.%Y, %H:%M"  # формат слота в таблице
+
+# Структура колонок в Google Sheets (1-based индексы) — документируем для ясности:
+# 1: (A) индекс / прочее
+# 2: (B) slot_text (например "13.10.2025, 15:00")
+# 3: (C) status ("" / "Ожидает подтверждения" / "Подтверждено" / ...)
+# 4: (D) full_name
+# 5: (E) username
+# 6: (F) user_id
+# 7: (G) -- (unused)
+# 8: (H) transfers (число)
+# 9: (I) remind24_flag ("0" или "1")
+# 10:(J) email_for_meet
+# 11:(K) meet_link (или "pending")
+# 12:(L) lang ("ru" или "en")
+
+# ========== Утилиты ==========
+def parse_slot_datetime(slot_text: str):
+    try:
+        return datetime.datetime.strptime(slot_text, DATE_FORMAT)
+    except Exception:
+        return None
+
 async def run_in_thread(func, *args, **kwargs):
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(executor, lambda: func(*args, **kwargs))
 
-def parse_slot_datetime(slot_text: str):
-    try:
-        return datetime.datetime.strptime(slot_text, "%d.%m.%Y, %H:%M")
-    except Exception:
-        return None
-
-EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-
+# Синхронная функция поиска будущей подтверждённой (или любой) записи пользователя
 def find_user_booking_sync(user_id: int):
-    """Ищет будущую запись пользователя. Возвращает (row_index (1-based), row_values, slot_str) или (None, None, None)."""
     all_rows = sheet.get_all_values()
     now = datetime.datetime.now()
-    for i, row in enumerate(all_rows[1:], start=2):
-        if len(row) >= 6:
-            uid = row[5].strip()
-            slot_text = row[1].strip()
-            if uid == str(user_id):
-                slot_dt = parse_slot_datetime(slot_text)
-                if slot_dt and slot_dt > now:
-                    return i, row, slot_text
+    for idx, row in enumerate(all_rows[1:], start=2):
+        # безопасно читаем поля
+        status = row[2].strip() if len(row) > 2 else ""
+        slot_text = row[1].strip() if len(row) > 1 else ""
+        uid = row[5].strip() if len(row) > 5 else ""
+        if uid == str(user_id):
+            slot_dt = parse_slot_datetime(slot_text)
+            if slot_dt and slot_dt > now:
+                return idx, row, slot_text
     return None, None, None
 
 async def find_user_booking(user_id: int):
     return await run_in_thread(find_user_booking_sync, user_id)
 
-# ============= МЕНЮ И ТЕКСТЫ =============
-actions = {
-    "book": {"ru": "📅 Записаться", "en": "📅 Book"},
-    "my_booking": {"ru": "📖 Моя запись", "en": "📖 My Booking"},
-    "reschedule": {"ru": "🔁 Перенос", "en": "🔁 Reschedule"},
-    "cancel": {"ru": "❌ Отмена", "en": "❌ Cancel"},
-    "get_link": {"ru": "📎 Получить ссылку", "en": "📎 Get Link"},
-    "info": {"ru": "ℹ️ Инфо", "en": "ℹ️ Info"},
-    "get_now": {"ru": "🔗 Получить сейчас", "en": "🔗 Get now"},
-    "get_later": {"ru": "⏰ За 15 минут до встречи", "en": "⏰ 15 minutes before"},
-    "cancel_action": {"ru": "Отмена", "en": "Cancel"},
-}
-
-def get_main_menu(lang):
+def get_main_menu(lang: str):
+    ru = {
+        "book": "📅 Записаться",
+        "my_booking": "📖 Моя запись",
+        "reschedule": "🔁 Перенос",
+        "cancel": "❌ Отмена",
+        "get_link": "📎 Получить ссылку",
+        "info": "ℹ️ Инфо",
+    }
+    en = {
+        "book": "📅 Book",
+        "my_booking": "📖 My Booking",
+        "reschedule": "🔁 Reschedule",
+        "cancel": "❌ Cancel",
+        "get_link": "📎 Get Link",
+        "info": "ℹ️ Info",
+    }
+    map_used = ru if lang == "ru" else en
     return [
-        [actions["book"][lang], actions["my_booking"][lang]],
-        [actions["reschedule"][lang], actions["cancel"][lang]],
-        [actions["get_link"][lang], actions["info"][lang]]
+        [map_used["book"], map_used["my_booking"]],
+        [map_used["reschedule"], map_used["cancel"]],
+        [map_used["get_link"], map_used["info"]],
     ]
 
-# ============= /start =============
+# ========== Хэндлеры ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Начало: выбираем язык
     context.user_data.clear()
     lang_keyboard = [["Русский", "English"]]
     await update.message.reply_text(
         "Please choose your language / Пожалуйста, выберите язык:",
         reply_markup=ReplyKeyboardMarkup(lang_keyboard, resize_keyboard=True)
     )
-    context.user_data['step'] = 'choose_lang'
+    context.user_data["step"] = "choose_lang"
 
-# ============= ОСНОВНАЯ ЛОГИКА =============
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
     user = update.message.from_user
     user_id = user.id
-    username = f"@{user.username}" if user.username else f"{user.first_name or ''} {user.last_name or ''}".strip()
 
     # /start
     if text.lower() == "/start":
         await start(update, context)
         return
 
-    # Выбор языка
-    if context.user_data.get('step') == 'choose_lang':
+    # Выбор языка (один раз)
+    if context.user_data.get("step") == "choose_lang":
         if text == "Русский":
-            lang = 'ru'
+            context.user_data["lang"] = "ru"
         elif text == "English":
-            lang = 'en'
+            context.user_data["lang"] = "en"
         else:
             await update.message.reply_text("Please choose from the buttons / Пожалуйста, выберите из кнопок.")
             return
-        context.user_data['lang'] = lang
+        lang = context.user_data["lang"]
         welcome = (
             "👋 Привет! Я бот для записи на консультацию Migrall.\nВыберите действие:"
-            if lang == 'ru' else
+            if lang == "ru" else
             "👋 Hello! I am a bot for booking a Migrall consultation.\nChoose an action:"
         )
         await update.message.reply_text(
             welcome,
             reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True)
         )
-        del context.user_data['step']
+        context.user_data.pop("step", None)
         return
 
-    if 'lang' not in context.user_data:
+    # Если язык не выбран — перенаправляем на start
+    if "lang" not in context.user_data:
         await start(update, context)
         return
 
-    lang = context.user_data['lang']
-
-    # === Универсальная отмена шага ===
-    if text == actions["cancel_action"][lang]:
+    lang = context.user_data["lang"]
+    # Универсальная отмена
+    if text.lower() in ("отмена", "cancel"):
         context.user_data.clear()
-        msg = "❌ Действие отменено." if lang == 'ru' else "❌ Action canceled."
+        msg = "❌ Действие отменено." if lang == "ru" else "❌ Action canceled."
         await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
         return
 
     # === Моя запись ===
-    if text == actions["my_booking"][lang]:
+    if text in (get_main_menu(lang)[0][1], "📖 Моя запись", "📖 My Booking"):
         row_idx, row, slot = await find_user_booking(user_id)
         if row_idx:
             status = row[2] if len(row) > 2 else ""
             meet_link = row[10] if len(row) > 10 else ""
             msg = (
                 f"📋 Ваша запись:\n\n🗓 {slot}\nСтатус: {status}"
-                if lang == 'ru' else
+                if lang == "ru" else
                 f"📋 Your booking:\n\n🗓 {slot}\nStatus: {status}"
             )
             if meet_link:
@@ -178,120 +207,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
         return
 
-    # === Получить ссылку (меню) ===
-    if text == actions["get_link"][lang]:
-        row_idx, row, slot = await find_user_booking(user_id)
-        if not row_idx:
-            msg = "❌ У вас нет активной записи." if lang == 'ru' else "❌ You have no active booking."
-            await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
-            return
-        meet_link = row[10] if len(row) > 10 else ""
-        if meet_link:
-            msg = f"🔗 Ваша ссылка: {meet_link}" if lang == 'ru' else f"🔗 Your link: {meet_link}"
-            await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
-            return
-        context.user_data["await_meet_creation"] = {"row": row_idx, "slot": slot, "user_id": str(user_id), "full_name": row[3] if len(row) > 3 else ""}
-        ask_msg = (
-            "Хотите, чтобы ссылка на Google Meet была выслана прямо сейчас или перед встречей?"
-            if lang == 'ru' else
-            "Do you want the Google Meet link sent right now or 15 minutes before the meeting?"
-        )
-        meet_buttons = [[actions["get_now"][lang], actions["get_later"][lang]]]
-        await update.message.reply_text(
-            ask_msg,
-            reply_markup=ReplyKeyboardMarkup(meet_buttons, resize_keyboard=True)
-        )
-        return
-
-    # === Отмена записи ===
-    if text == actions["cancel"][lang]:
-        row_idx, row, slot = await find_user_booking(user_id)
-        if not row_idx:
-            msg = "❌ У вас нет записи для отмены." if lang == 'ru' else "❌ You have no booking to cancel."
-            await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
-            return
-        def clear_row():
-            for c in range(3, 13):
-                sheet.update_cell(row_idx, c, "")
-        await run_in_thread(clear_row)
-        msg = f"✅ Ваша запись на {slot} отменена." if lang == 'ru' else f"✅ Your booking for {slot} is canceled."
-        await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
-        try:
-            await context.bot.send_message(ADMIN_ID, f"❌ Отмена: {row[3]} ({row[4]}) — {slot}")
-        except Exception as e:
-            logger.error(f"Ошибка уведомления админу при отмене: {e}")
-        return
-
-    # === Перенос ===
-    if text == actions["reschedule"][lang]:
-        row_idx, row, slot = await find_user_booking(user_id)
-        if not row_idx:
-            msg = "❌ У вас нет записи для переноса." if lang == 'ru' else "❌ You have no booking to reschedule."
-            await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
-            return
-        all_rows = await run_in_thread(sheet.get_all_values)
-        now = datetime.datetime.now()
-        free_slots = []
-        for r in all_rows[1:]:
-            if len(r) >= 3 and r[2].strip() == "":
-                dt = parse_slot_datetime(r[1].strip())
-                if dt and dt > now:
-                    free_slots.append(r[1].strip())
-        if not free_slots:
-            msg = "❌ Нет доступных слотов для переноса." if lang == 'ru' else "❌ No available slots for reschedule."
-            await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
-            return
-        context.user_data["step"] = "transfer_choose"
-        context.user_data["transfer_from_row"] = row_idx
-        ask_msg = "Выберите новый слот для переноса:" if lang == 'ru' else "Choose a new slot for reschedule:"
-        await update.message.reply_text(ask_msg, reply_markup=ReplyKeyboardMarkup([[s] for s in free_slots], resize_keyboard=True))
-        return
-
-    if context.user_data.get("step") == "transfer_choose":
-        new_slot = text.strip()
-        try:
-            cell = await run_in_thread(sheet.find, new_slot)
-        except Exception:
-            msg = "❌ Слот не найден. Попробуйте снова." if lang == 'ru' else "❌ Slot not found. Try again."
-            await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
-            context.user_data.clear()
-            return
-        if (await run_in_thread(sheet.cell, cell.row, 3)).value.strip() != "":
-            msg = "❌ Этот слот уже занят." if lang == 'ru' else "❌ This slot is already taken."
-            await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
-            context.user_data.clear()
-            return
-        from_row = context.user_data.get("transfer_from_row")
-        if not from_row:
-            msg = "❌ Внутренняя ошибка. Повторите попытку." if lang == 'ru' else "❌ Internal error. Try again."
-            await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
-            context.user_data.clear()
-            return
-        old_row_values = await run_in_thread(lambda: sheet.row_values(from_row))
-        def do_transfer():
-            for c in range(3, 13):
-                sheet.update_cell(from_row, c, "")
-            sheet.update_cell(cell.row, 3, "Подтверждено (перенос)")
-            if len(old_row_values) >= 6:
-                sheet.update_cell(cell.row, 4, old_row_values[3] if len(old_row_values) > 3 else "")
-                sheet.update_cell(cell.row, 5, old_row_values[4] if len(old_row_values) > 4 else "")
-                sheet.update_cell(cell.row, 6, old_row_values[5] if len(old_row_values) > 5 else "")
-            transfers = int(old_row_values[7]) + 1 if len(old_row_values) > 7 and old_row_values[7].isdigit() else 1
-            sheet.update_cell(cell.row, 8, str(transfers))
-            sheet.update_cell(cell.row, 9, "0")
-            sheet.update_cell(cell.row, 12, old_row_values[11] if len(old_row_values) > 11 else "ru")
-        await run_in_thread(do_transfer)
-        msg = f"✅ Запись перенесена на {new_slot}." if lang == 'ru' else f"✅ Booking rescheduled to {new_slot}."
-        await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
-        try:
-            await context.bot.send_message(ADMIN_ID, f"🔁 Перенос: {old_row_values[3]} ({old_row_values[4]}) — {old_row_values[1]} → {new_slot}")
-        except Exception as e:
-            logger.error(f"Ошибка уведомления админу о переносе: {e}")
-        context.user_data.clear()
-        return
-
     # === Инфо ===
-    if text == actions["info"][lang]:
+    if text in (get_main_menu(lang)[2][1], "ℹ️ Инфо", "ℹ️ Info"):
         msg = (
             "ℹ️ Консультация по легализации в Португалии 🇵🇹 и Испании 🇪🇸\n\n"
             "Стоимость: 120 € (возможен НДС 23%)\nДлительность: 1 час\n\n"
@@ -305,21 +222,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # === Записаться (начало) ===
-    if text == actions["book"][lang]:
-        row_idx, row, slot = await find_user_booking(user_id)
-        if row_idx:
-            msg = f"❌ У вас уже есть активная запись на {slot}." if lang == 'ru' else f"❌ You already have an active booking for {slot}."
+    if text in (get_main_menu(lang)[0][0], "📅 Записаться", "📅 Book"):
+        # проверим, есть ли уже запись
+        r_idx, r_row, r_slot = await find_user_booking(user_id)
+        if r_idx:
+            msg = f"❌ У вас уже есть активная запись на {r_slot}." if lang == 'ru' else f"❌ You already have an active booking for {r_slot}."
             await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
             return
         context.user_data["step"] = "ask_name"
         ask_msg = "✏️ Введите ваше имя и фамилию:" if lang == 'ru' else "✏️ Enter your first and last name:"
-        cancel_button = [[actions["cancel_action"][lang]]]
+        cancel_button = [[ "Отмена" if lang=="ru" else "Cancel" ]]
         await update.message.reply_text(ask_msg, reply_markup=ReplyKeyboardMarkup(cancel_button, resize_keyboard=True))
         return
 
-    # === Имя для записи ===
+    # === Шаг: имя для записи ===
     if context.user_data.get("step") == "ask_name":
         context.user_data["full_name"] = text
+        # Получаем доступные слоты
         all_rows = await run_in_thread(sheet.get_all_values)
         now = datetime.datetime.now()
         free_slots = []
@@ -338,7 +257,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["step"] = "choose_slot"
         return
 
-    # === Выбор слота ===
+    # === Шаг: выбор слота ===
     if context.user_data.get("step") == "choose_slot":
         slot = text.strip()
         try:
@@ -354,6 +273,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
             context.user_data.clear()
             return
+
+        # Записываем запрос в таблицу
         full_name = context.user_data.get("full_name", "Без имени")
         username_val = f"@{user.username}" if user.username else ""
         def write_request():
@@ -361,95 +282,96 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sheet.update_cell(cell.row, 4, full_name)
             sheet.update_cell(cell.row, 5, username_val)
             sheet.update_cell(cell.row, 6, str(user_id))
-            if not sheet.cell(cell.row, 8).value:
+            # первоначальные значения
+            h_val = sheet.cell(cell.row, 8).value
+            if not h_val:
                 sheet.update_cell(cell.row, 8, "0")
             sheet.update_cell(cell.row, 9, "0")
             sheet.update_cell(cell.row, 12, lang)
         await run_in_thread(write_request)
+
         msg = "📨 Запрос отправлен! Ожидайте подтверждения администратора." if lang == 'ru' else "📨 Request sent! Wait for administrator confirmation."
         await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
-        admin_msg = f"📩 Новый запрос:\n👤 {full_name}\n💬 {username_val}\n🕒 {slot}"
+
+        # Уведомляем админа (всегда на русском) с inline-кнопками
+        admin_text = f"📩 Новый запрос:\n👤 {full_name}\n💬 {username_val}\n🕒 {slot}\n\nНажмите кнопку для действия."
+        # используем callback_data вида confirm:<row> или refuse:<row>
         try:
-            await context.bot.send_message(ADMIN_ID, admin_msg, reply_markup=ReplyKeyboardMarkup(
-                [[f"✅ Подтвердить|{username_val}|{cell.row}", f"❌ Отказать|{username_val}|{cell.row}"]],
-                resize_keyboard=True
-            ))
-            logger.info("Уведомление админу отправлено")
+            await context.bot.send_message(
+                ADMIN_ID,
+                admin_text,
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("✅ Подтвердить", callback_data=f"confirm:{cell.row}"),
+                        InlineKeyboardButton("❌ Отказать", callback_data=f"refuse:{cell.row}")
+                    ]
+                ])
+            )
+            logger.info("Уведомление админу отправлено (inline)")
         except Exception as e:
             logger.error(f"Ошибка отправки админу: {e}")
+
         context.user_data.clear()
         return
 
-    # === Подтвердить (админ) ===
-    if text.startswith("✅ Подтвердить|"):
-        try:
-            _, uname, row_str = text.split("|")
-            row = int(row_str)
-            await run_in_thread(sheet.update_cell, row, 3, "Подтверждено")
-            slot_time = (await run_in_thread(sheet.cell, row, 2)).value
-            user_id_cell = (await run_in_thread(sheet.cell, row, 6)).value
-            user_lang = (await run_in_thread(sheet.cell, row, 12)).value or 'ru'
-            confirmed_msg = (
-                f"✅ Ваша запись на {slot_time} подтверждена!\nХотите, чтобы ссылка на Google Meet была выслана прямо сейчас или перед встречей?"
-                if user_lang == 'ru' else
-                f"✅ Your booking for {slot_time} is confirmed!\nDo you want the Google Meet link sent right now or 15 minutes before the meeting?"
-            )
-            meet_buttons = [[actions["get_now"][user_lang], actions["get_later"][user_lang]]]
-            if user_id_cell:
-                try:
-                    await context.bot.send_message(
-                        int(user_id_cell),
-                        confirmed_msg,
-                        reply_markup=ReplyKeyboardMarkup(meet_buttons, resize_keyboard=True)
-                    )
-                except Exception as e:
-                    logger.error(f"Ошибка отправки пользователю (подтверждение): {e}")
-            await update.message.reply_text(f"✅ Подтверждено: {uname} — {slot_time}", reply_markup=ReplyKeyboardMarkup(get_main_menu('ru'), resize_keyboard=True))
-        except Exception as e:
-            await update.message.reply_text(f"⚠️ Ошибка подтверждения: {e}", reply_markup=ReplyKeyboardMarkup(get_main_menu('ru'), resize_keyboard=True))
+    # === Получить ссылку ===
+    if text in (get_main_menu(lang)[2][0], "📎 Получить ссылку", "📎 Get Link"):
+        row_idx, row, slot = await find_user_booking(user_id)
+        if not row_idx:
+            msg = "❌ У вас нет активной записи." if lang == 'ru' else "❌ You have no active booking."
+            await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
+            return
+        meet_link = row[10] if len(row) > 10 else ""
+        if meet_link and meet_link != "pending":
+            msg = f"🔗 Ваша ссылка: {meet_link}" if lang == 'ru' else f"🔗 Your link: {meet_link}"
+            await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
+            return
+        # если нет ссылки, предлагается отправить сейчас или позже
+        context.user_data["await_meet_creation"] = {"row": row_idx, "slot": slot}
+        ask_msg = (
+            "Хотите, чтобы ссылка на Google Meet была выслана прямо сейчас или за 15 минут до встречи?"
+            if lang == 'ru' else
+            "Do you want the Google Meet link sent right now or 15 minutes before the meeting?"
+        )
+        meet_buttons = [["🔗 Получить сейчас" if lang=="ru" else "🔗 Get now", "⏰ За 15 минут до встречи" if lang=="ru" else "⏰ 15 minutes before"]]
+        await update.message.reply_text(ask_msg, reply_markup=ReplyKeyboardMarkup(meet_buttons, resize_keyboard=True))
         return
 
-    # === Отказать (админ) ===
-    if text.startswith("❌ Отказать|"):
+    # === Отмена записи пользователем ===
+    if text in (get_main_menu(lang)[1][1], "❌ Отмена", "❌ Cancel"):
+        row_idx, row, slot = await find_user_booking(user_id)
+        if not row_idx:
+            msg = "❌ У вас нет записи для отмены." if lang == 'ru' else "❌ You have no booking to cancel."
+            await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
+            return
+        def clear_row():
+            for c in range(3, 13):
+                sheet.update_cell(row_idx, c, "")
+        await run_in_thread(clear_row)
+        msg = f"✅ Ваша запись на {slot} отменена." if lang == 'ru' else f"✅ Your booking for {slot} is canceled."
+        await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
         try:
-            _, uname, row_str = text.split("|")
-            row = int(row_str)
-            slot_time = (await run_in_thread(sheet.cell, row, 2)).value
-            user_id_cell = (await run_in_thread(sheet.cell, row, 6)).value
-            user_lang = (await run_in_thread(sheet.cell, row, 12)).value or 'ru'
-            refused_msg = (
-                f"❌ Ваша запись на {slot_time} не подтверждена."
-                if user_lang == 'ru' else
-                f"❌ Your booking for {slot_time} is not confirmed."
-            )
-            def clear_row():
-                for c in range(3, 13):
-                    sheet.update_cell(row, c, "")
-            await run_in_thread(clear_row)
-            if user_id_cell:
-                try:
-                    await context.bot.send_message(int(user_id_cell), refused_msg)
-                except Exception as e:
-                    logger.error(f"Ошибка уведомления пользователю об отказе: {e}")
-            await update.message.reply_text(f"❌ Отказано: {uname} — {slot_time}", reply_markup=ReplyKeyboardMarkup(get_main_menu('ru'), resize_keyboard=True))
+            await context.bot.send_message(ADMIN_ID, f"❌ Отмена: {row[3]} ({row[4]}) — {slot}")
         except Exception as e:
-            await update.message.reply_text(f"⚠️ Ошибка отказа: {e}", reply_markup=ReplyKeyboardMarkup(get_main_menu('ru'), resize_keyboard=True))
+            logger.error(f"Ошибка уведомления админу при отмене: {e}")
         return
 
-    # === Пользователь: выбрал сейчас / за 15 минут ===
-    if text in (actions["get_now"][lang], actions["get_later"][lang]):
-        context.user_data["meet_choice"] = "now" if text == actions["get_now"][lang] else "later"
+    # === Переадресация: если пользователь нажал "Получить сейчас/позже" ===
+    if text in ("🔗 Получить сейчас", "🔗 Get now", "⏰ За 15 минут до встречи", "⏰ 15 minutes before"):
+        # Сохраняем выбор и просим email
+        choice = "now" if "сейчас" in text or "Get now" in text else "later"
+        context.user_data["meet_choice"] = choice
         ask_msg = "Введите, пожалуйста, ваш email для отправки приглашения:" if lang == 'ru' else "Please enter your email to send the invitation:"
-        cancel_button = [[actions["cancel_action"][lang]]]
+        cancel_button = [[ "Отмена" if lang=="ru" else "Cancel" ]]
         await update.message.reply_text(ask_msg, reply_markup=ReplyKeyboardMarkup(cancel_button, resize_keyboard=True))
         return
 
-    # === Пользователь ввёл email (для now или later) ===
-    if "meet_choice" in context.user_data and context.user_data["meet_choice"] in ("now", "later"):
+    # === Пользователь ввёл email для meet (now / later) ===
+    if "meet_choice" in context.user_data:
         email = text.strip()
         if not EMAIL_RE.match(email):
             msg = "❌ Неверный формат email. Попробуйте снова:" if lang == 'ru' else "❌ Invalid email format. Try again:"
-            cancel_button = [[actions["cancel_action"][lang]]]
+            cancel_button = [[ "Отмена" if lang=="ru" else "Cancel" ]]
             await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(cancel_button, resize_keyboard=True))
             return
         choice = context.user_data.pop("meet_choice")
@@ -457,9 +379,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not row_idx:
             msg = "❌ Не найдена подтверждённая запись. Свяжитесь с администратором." if lang == 'ru' else "❌ Confirmed booking not found. Contact the administrator."
             await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
-            context.user_data.clear()
             return
         full_name = row[3] if len(row) > 3 else ""
+        # now -> создаём событие и отправляем ссылку сейчас
         if choice == "now":
             event_start = parse_slot_datetime(slot)
             if not event_start:
@@ -495,15 +417,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if lang == 'ru' else
                     f"✅ Google Meet link sent to {email}:\n{meet_link}\n\nYou will receive a reminder message 24 hours before the meeting."
                 )
-                await context.bot.send_message(user_id, send_msg)
-                reply_msg = "✅ Ссылка создана и отправлена в чат." if lang == 'ru' else "✅ Link created and sent to chat."
-                await update.message.reply_text(reply_msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
+                await context.bot.send_message(user_id, send_msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
+                await update.message.reply_text("✅ Ссылка создана и отправлена.", reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
             except Exception as e:
                 logger.error(f"Ошибка создания события: {e}")
                 msg = f"⚠️ Ошибка создания события: {e}" if lang == 'ru' else f"⚠️ Error creating event: {e}"
                 await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
             return
-        else:  # later
+        else:
+            # later -> сохраняем email и пометку pending
             try:
                 await run_in_thread(sheet.update_cell, row_idx, 10, email)
                 await run_in_thread(sheet.update_cell, row_idx, 11, "pending")
@@ -519,12 +441,114 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
             return
 
-    # === Если не распознали команду ===
+    # если команда не распознана:
     msg = "Не понял команду — попробуйте ещё раз." if lang == 'ru' else "Didn't understand the command — try again."
     await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
 
-# ============= ФОНОВАЯ ЗАДАЧА (создание Meet за 15 минут и напоминания) =============
-async def background_jobs(app: Application):
+
+# ========== CallbackQueryHandler для админских inline-кнопок ==========
+async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data  # формат: "confirm:<row>" или "refuse:<row>"
+    user = query.from_user
+    if query.message.chat_id != ADMIN_ID:
+        # Защита: только админ может нажимать
+        await query.edit_message_text("Только администратор может выполнять это действие.")
+        return
+
+    try:
+        action, row_str = data.split(":", 1)
+        row = int(row_str)
+    except Exception:
+        await query.edit_message_text("Неверные данные callback.")
+        return
+
+    # читаем строку
+    try:
+        row_values = await run_in_thread(lambda: sheet.row_values(row))
+    except Exception as e:
+        logger.error(f"Ошибка чтения строки для admin action: {e}")
+        await query.edit_message_text(f"Ошибка доступа к таблице: {e}")
+        return
+
+    slot_time = row_values[1] if len(row_values) > 1 else ""
+    user_id_cell = row_values[5] if len(row_values) > 5 else ""
+    user_lang = row_values[11] if len(row_values) > 11 else "ru"
+    full_name = row_values[3] if len(row_values) > 3 else ""
+    username_val = row_values[4] if len(row_values) > 4 else ""
+
+    if action == "confirm":
+        # Обновляем статус в таблице
+        try:
+            await run_in_thread(sheet.update_cell, row, 3, "Подтверждено")
+        except Exception as e:
+            logger.error(f"Ошибка записи подтверждения: {e}")
+            await query.edit_message_text(f"Ошибка записи подтверждения: {e}")
+            return
+
+        # Отправляем сообщение пользователю (на его языке), без лишних welcome/choose_lang
+        confirmed_msg = (
+            f"✅ Ваша запись на {slot_time} подтверждена!\n"
+            "Хотите, чтобы ссылка на Google Meet была выслана прямо сейчас или за 15 минут до встречи?"
+            if user_lang == 'ru' else
+            f"✅ Your booking for {slot_time} is confirmed!\n"
+            "Do you want the Google Meet link sent right now or 15 minutes before the meeting?"
+        )
+        # кнопки на языке пользователя
+        now_label = "🔗 Получить сейчас" if user_lang == "ru" else "🔗 Get now"
+        later_label = "⏰ За 15 минут до встречи" if user_lang == "ru" else "⏰ 15 minutes before"
+        try:
+            if user_id_cell:
+                await context.bot.send_message(int(user_id_cell), confirmed_msg,
+                                               reply_markup=ReplyKeyboardMarkup([[now_label, later_label]], resize_keyboard=True))
+        except Exception as e:
+            logger.error(f"Ошибка отправки подтверждения пользователю: {e}")
+
+        # Подтверждение в админском сообщении (редактируем сообщение)
+        await query.edit_message_text(f"✅ Подтвержено: {full_name} — {slot_time}")
+        # Уведомление админу в личный лог (не обязательно)
+        try:
+            await context.bot.send_message(ADMIN_ID, f"✅ Подтверждена запись: {full_name} — {slot_time}")
+        except Exception:
+            pass
+        return
+
+    if action == "refuse":
+        # очищаем строку
+        try:
+            def clear_row():
+                for c in range(3, 13):
+                    sheet.update_cell(row, c, "")
+            await run_in_thread(clear_row)
+        except Exception as e:
+            logger.error(f"Ошибка очистки строки при отказе: {e}")
+            await query.edit_message_text(f"Ошибка при отказе: {e}")
+            return
+
+        refused_msg = (
+            f"❌ Ваша запись на {slot_time} не подтверждена."
+            if user_lang == 'ru' else
+            f"❌ Your booking for {slot_time} is not confirmed."
+        )
+        try:
+            if user_id_cell:
+                await context.bot.send_message(int(user_id_cell), refused_msg)
+        except Exception as e:
+            logger.error(f"Ошибка уведомления пользователя об отказе: {e}")
+
+        await query.edit_message_text(f"❌ Отказано: {full_name} — {slot_time}")
+        try:
+            await context.bot.send_message(ADMIN_ID, f"❌ Отказ: {full_name} — {slot_time}")
+        except Exception:
+            pass
+        return
+
+    await query.edit_message_text("Неизвестное действие.")
+
+
+# ========== Фоновая задача: напоминания и создание Meet за 15 минут ==========
+async def background_jobs(app):
     try:
         all_rows = await run_in_thread(sheet.get_all_values)
     except Exception as e:
@@ -539,11 +563,13 @@ async def background_jobs(app: Application):
         slot_text = row[1].strip() if len(row) > 1 else ""
         user_id = row[5].strip() if len(row) > 5 else ""
         user_lang = row[11].strip() if len(row) > 11 else "ru"
+
         if status == "Подтверждено" and user_id:
             slot_dt = parse_slot_datetime(slot_text)
             if not slot_dt:
                 continue
             seconds_to = (slot_dt - now).total_seconds()
+
             # Напоминание за 24 часа
             if remind_flag == "0" and 0 < seconds_to <= 86400:
                 try:
@@ -556,7 +582,8 @@ async def background_jobs(app: Application):
                     await run_in_thread(sheet.update_cell, i, 9, "1")
                 except Exception as e:
                     logger.error(f"Ошибка отправки напоминания для row {i}: {e}")
-            # Отправка Meet за 15 минут до встречи
+
+            # Отправка Meet за 15 минут до встречи (если email задан и meet_link помечен как "pending")
             if email and link == "pending" and 0 < seconds_to <= 900:
                 request_id = f"migrall-{user_id}-{int(datetime.datetime.now().timestamp())}"
                 summary = "Консультация Migrall" if user_lang == 'ru' else "Migrall Consultation"
@@ -589,15 +616,21 @@ async def background_jobs(app: Application):
                 except Exception as e:
                     logger.error(f"Ошибка создания события в background для row {i}: {e}")
 
-# ============= ЗАПУСК БОТА =============
+# ========== Запуск приложения ==========
 def main():
     app = Application.builder().token(TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CallbackQueryHandler(admin_callback_handler))
+
+    # Запускаем фоновую задачу (JobQueue)
     try:
+        # используем job_queue встроенный в telegram.ext
         app.job_queue.run_repeating(lambda ctx: asyncio.create_task(background_jobs(app)), interval=60, first=10)
     except Exception as e:
         logger.error(f"JobQueue не запущен: {e}. Если возникнут проблемы с отложенной отправкой, установите python-telegram-bot[job-queue].")
+
     logger.info("🚀 Бот запущен (webhook)")
     app.run_webhook(
         listen="0.0.0.0",
