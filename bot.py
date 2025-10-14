@@ -648,8 +648,54 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
     await query.edit_message_text("Неизвестное действие.")
 
 
-# ========== Фоновая задача: напоминания и создание Meet за 15 минут ==========
+# ========== Фоновые задачи ==========
+
+# >>> НАЧАЛО: НОВЫЙ КОД для авто-заполнения расписания
+async def populate_schedule(app):
+    """
+    Проверяет и заполняет расписание на 14 дней вперёд.
+    Понедельник-пятница, с 10:00 до 16:00.
+    """
+    def populate_schedule_sync():
+        logger.info("Запуск задачи авто-заполнения расписания...")
+        try:
+            # Используем set для быстрой проверки существования слота
+            existing_slots = set(sheet.col_values(2)[1:])
+            slots_to_add = []
+            today = datetime.date.today()
+
+            # Генерируем даты на 14 дней вперёд
+            for day_offset in range(15):
+                current_date = today + datetime.timedelta(days=day_offset)
+
+                # Проверяем, что это будний день (0=Пн, 4=Пт)
+                if current_date.weekday() < 5:
+                    # Генерируем время с 10 до 16
+                    for hour in range(10, 17):
+                        slot_dt = datetime.datetime.combine(current_date, datetime.time(hour=hour))
+                        slot_text = slot_dt.strftime(DATE_FORMAT)
+
+                        # Если слота нет в таблице, готовим его к добавлению
+                        if slot_text not in existing_slots:
+                            slots_to_add.append(['', slot_text]) # Добавляем только во вторую колонку
+                            existing_slots.add(slot_text) # Добавляем в set, чтобы не дублировать в этой же сессии
+
+            # Если есть что добавить, делаем это одним запросом
+            if slots_to_add:
+                sheet.append_rows(slots_to_add, value_input_option='USER_ENTERED')
+                logger.info(f"Добавлено {len(slots_to_add)} новых слотов в расписание.")
+            else:
+                logger.info("Новых слотов для добавления не найдено, расписание актуально.")
+
+        except Exception as e:
+            logger.error(f"Ошибка в задаче авто-заполнения расписания: {e}")
+
+    await run_in_thread(populate_schedule_sync)
+# <<< КОНЕЦ: НОВЫЙ КОД
+
+
 async def background_jobs(app):
+    """Напоминания и создание Meet за 15 минут."""
     try:
         all_rows = await run_in_thread(sheet.get_all_values)
     except Exception as e:
@@ -753,10 +799,14 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(admin_callback_handler))
 
-    # Запускаем фоновую задачу (JobQueue)
+    # Запускаем фоновые задачи (JobQueue)
     try:
-        # используем job_queue встроенный в telegram.ext
+        # Задача для напоминаний (каждую минуту)
         app.job_queue.run_repeating(lambda ctx: asyncio.create_task(background_jobs(app)), interval=60, first=10)
+        
+        # >>> ИЗМЕНЕНИЕ: Новая задача для заполнения расписания (каждые 12 часов)
+        app.job_queue.run_repeating(lambda ctx: asyncio.create_task(populate_schedule(app)), interval=43200, first=5)
+        
     except Exception as e:
         logger.error(f"JobQueue не запущен: {e}. Если возникнут проблемы с отложенной отправкой, установите python-telegram-bot[job-queue].")
 
