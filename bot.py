@@ -212,13 +212,41 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # === Инфо ===
     if text in (get_main_menu(lang)[2][1], "ℹ️ Инфо", "ℹ️ Info"):
         msg = (
-            "ℹ️ Консультация по легализации в Португалии 🇵🇹 и Испании 🇪🇸\n\n"
-            "Стоимость: 120 € (возможен НДС 23%)\nДлительность: 1 час\n\n"
-            "Чтобы записаться — выберите 📅 Записаться."
+            "💬 Консультация по легализации в Португалии 🇵🇹 и Испании 🇪🇸\n\n"
+            "Консультация поможет вам разобраться со всеми нюансами переезда и составить четкий план действий.\n\n"
+            "🔹 Что разберем на консультации?\n"
+            "✅ Анализируем именно ваш кейс\n"
+            "✅ Рассматриваем все возможные варианты легализации\n"
+            "✅ Прописываем пошаговый план, включая самостоятельные шаги\n"
+            "✅ Отвечаем на все ваши вопросы\n\n"
+            "💰 Стоимость: 120 €\n"
+            "⏳ Длительность: 1 час\n\n"
+            "*К сумме может быть добавлен НДС 23%\n\n"
+            "📌 Как записаться?\n"
+            "1️⃣ Согласовываем удобное время\n"
+            "2️⃣ Оплачиваете (перевод на РФ карту, крипта, IBAN в евро)\n"
+            "3️⃣ Перед встречей отправляем ссылку (Google Meet)\n"
+            "4️⃣ Проводим консультацию\n"
+            "5️⃣ После остаемся на связи для уточняющих вопросов\n\n"
+            "📩 Готовы записаться или остались вопросы? Пишите – поможем!"
             if lang == 'ru' else
-            "ℹ️ Consultation on legalization in Portugal 🇵🇹 and Spain 🇪🇸\n\n"
-            "Cost: 120 € (possible VAT 23%)\nDuration: 1 hour\n\n"
-            "To book — choose 📅 Book."
+            "💬 Consultation on legalization in Portugal 🇵🇹 and Spain 🇪🇸\n\n"
+            "The consultation will help you understand all the nuances of relocation and create a clear action plan.\n\n"
+            "🔹 What will we cover in the consultation?\n"
+            "✅ Analyze your specific case\n"
+            "✅ Consider all possible legalization options\n"
+            "✅ Provide a step-by-step plan, including independent steps\n"
+            "✅ Answer all your questions\n\n"
+            "💰 Cost: 120 €\n"
+            "⏳ Duration: 1 hour\n\n"
+            "*VAT 23% may be added to the amount\n\n"
+            "📌 How to book?\n"
+            "1️⃣ Agree on a convenient time\n"
+            "2️⃣ Make payment (transfer to a Russian card, crypto, IBAN in euros)\n"
+            "3️⃣ Receive a Google Meet link before the meeting\n"
+            "4️⃣ Conduct the consultation\n"
+            "5️⃣ Stay in touch for follow-up questions\n\n"
+            "📩 Ready to book or have questions? Write to us – we’ll help!"
         )
         await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
         return
@@ -230,7 +258,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
             return
         context.user_data["step"] = "ask_name"
-        ask_msg = "✏️ Введите ваше имя и фамилию:" if lang == 'ru' else "✏️ Enter your first and last name:"
+        ask_msg = (
+            "✏️ Введите ваше имя и фамилию:\n\n"
+            "ℹ️ Время консультации указано по Лиссабону. Слот подтверждается администратором после оплаты."
+            if lang == 'ru' else
+            "✏️ Enter your first and last name:\n\n"
+            "ℹ️ Consultation time is in Lisbon time. The slot is confirmed by the administrator after payment."
+        )
         cancel_button = [["Отмена" if lang == "ru" else "Cancel"]]
         await update.message.reply_text(ask_msg, reply_markup=ReplyKeyboardMarkup(cancel_button, resize_keyboard=True))
         return
@@ -323,7 +357,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         context.user_data["reschedule_row"] = row_idx
         context.user_data["step"] = "ask_name_reschedule"
-        ask_msg = "✏️ Введите ваше имя и фамилию для новой записи:" if lang == 'ru' else "✏️ Enter your first and last name for the new booking:"
+        ask_msg = (
+            "✏️ Введите ваше имя и фамилию для новой записи:\n\n"
+            "ℹ️ Время консультации указано по Лиссабону. Слот подтверждается администратором после оплаты."
+            if lang == 'ru' else
+            "✏️ Enter your first and last name for the new booking:\n\n"
+            "ℹ️ Consultation time is in Lisbon time. The slot is confirmed by the administrator after payment."
+        )
         cancel_button = [["Отмена" if lang == "ru" else "Cancel"]]
         await update.message.reply_text(ask_msg, reply_markup=ReplyKeyboardMarkup(cancel_button, resize_keyboard=True))
         return
