@@ -106,7 +106,8 @@ async def find_user_booking(user_id: int):
 
 def get_main_menu(lang: str):
     ru = {
-        "book": "📅 Записаться",
+        "book_consultation": "📅 Запись на консультацию",
+        "book_client": "🤝 Запись для клиентов",
         "my_booking": "📖 Моя запись",
         "reschedule": "🔁 Перенос",
         "cancel": "❌ Отмена",
@@ -114,7 +115,8 @@ def get_main_menu(lang: str):
         "info": "ℹ️ Инфо",
     }
     en = {
-        "book": "📅 Book",
+        "book_consultation": "📅 Book Consultation",
+        "book_client": "🤝 Client Booking",
         "my_booking": "📖 My Booking",
         "reschedule": "🔁 Reschedule",
         "cancel": "❌ Cancel",
@@ -123,9 +125,10 @@ def get_main_menu(lang: str):
     }
     map_used = ru if lang == "ru" else en
     return [
-        [map_used["book"], map_used["my_booking"]],
-        [map_used["reschedule"], map_used["cancel"]],
-        [map_used["get_link"], map_used["info"]],
+        [map_used["book_consultation"], map_used["book_client"]],
+        [map_used["my_booking"], map_used["reschedule"]],
+        [map_used["cancel"], map_used["get_link"]],
+        [map_used["info"]],
     ]
 
 # ========== Хэндлеры ==========
@@ -192,7 +195,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
         return
     # === Моя запись ===
-    if text in (get_main_menu(lang)[0][1], "📖 Моя запись", "📖 My Booking"):
+    if text in ("📖 Моя запись", "📖 My Booking"):
         row_idx, row, slot = await find_user_booking(user_id)
         if row_idx:
             status = row[2] if len(row) > 2 else ""
@@ -210,7 +213,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
         return
     # === Инфо ===
-    if text in (get_main_menu(lang)[2][1], "ℹ️ Инфо", "ℹ️ Info"):
+    if text in ("ℹ️ Инфо", "ℹ️ Info"):
         msg = (
             "💬 Консультация по легализации в Португалии 🇵🇹 и Испании 🇪🇸\n\n"
             "Консультация поможет вам разобраться со всеми нюансами переезда и составить четкий план действий.\n\n"
@@ -246,18 +249,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "3️⃣ Receive a Google Meet link before the meeting\n"
             "4️⃣ Conduct the consultation\n"
             "5️⃣ Stay in touch for follow-up questions\n\n"
-            "📩 Ready to book or have questions? Write to us – we’ll help!"
+            "📩 Ready to book or have questions? Write to us – we'll help!"
         )
         await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
         return
-    # === Записаться ===
-    if text in (get_main_menu(lang)[0][0], "📅 Записаться", "📅 Book"):
+
+    # === Запись на консультацию ===
+    if text in ("📅 Запись на консультацию", "📅 Book Consultation"):
         r_idx, r_row, r_slot = await find_user_booking(user_id)
         if r_idx:
             msg = f"❌ У вас уже есть активная запись на {r_slot}." if lang == 'ru' else f"❌ You already have an active booking for {r_slot}."
             await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
             return
         context.user_data["step"] = "ask_name"
+        context.user_data["booking_type"] = "consultation"
         ask_msg = (
             "✏️ Введите ваше имя и фамилию:\n\n"
             "ℹ️ Время консультации указано по Лиссабону. Слот подтверждается администратором после оплаты."
@@ -268,6 +273,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cancel_button = [["Отмена" if lang == "ru" else "Cancel"]]
         await update.message.reply_text(ask_msg, reply_markup=ReplyKeyboardMarkup(cancel_button, resize_keyboard=True))
         return
+
+    # === Запись для клиентов ===
+    if text in ("🤝 Запись для клиентов", "🤝 Client Booking"):
+        r_idx, r_row, r_slot = await find_user_booking(user_id)
+        if r_idx:
+            msg = f"❌ У вас уже есть активная запись на {r_slot}." if lang == 'ru' else f"❌ You already have an active booking for {r_slot}."
+            await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
+            return
+        context.user_data["step"] = "ask_name"
+        context.user_data["booking_type"] = "client"
+        ask_msg = (
+            "✏️ Введите ваше имя и фамилию:\n\n"
+            "ℹ️ Время встречи указано по Лиссабону. Слот подтверждается администратором."
+            if lang == 'ru' else
+            "✏️ Enter your first and last name:\n\n"
+            "ℹ️ Meeting time is in Lisbon time. The slot is confirmed by the administrator."
+        )
+        cancel_button = [["Отмена" if lang == "ru" else "Cancel"]]
+        await update.message.reply_text(ask_msg, reply_markup=ReplyKeyboardMarkup(cancel_button, resize_keyboard=True))
+        return
+
     # === Шаг: имя для записи ===
     if context.user_data.get("step") == "ask_name":
         context.user_data["full_name"] = text
@@ -291,9 +317,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(ask_msg, reply_markup=ReplyKeyboardMarkup([[s] for s in free_slots], resize_keyboard=True))
         context.user_data["step"] = "choose_slot"
         return
+
     # === Шаг: выбор слота ===
     if context.user_data.get("step") == "choose_slot":
         slot = text.strip()
+        booking_type = context.user_data.get("booking_type", "consultation")
         try:
             cell = await run_in_thread(sheet.find, slot)
         except Exception:
@@ -326,9 +354,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sheet.update_cell(cell.row, 9, "0")
             sheet.update_cell(cell.row, 12, context.user_data.get("lang", "ru"))
         await run_in_thread(write_request)
-        msg = "📨 Запрос отправлен! Ожидайте подтверждения администратора." if lang == 'ru' else "📨 Request sent! Wait for administrator confirmation."
+
+        if booking_type == "consultation":
+            msg = "📨 Запрос отправлен! Ожидайте подтверждения администратора." if lang == 'ru' else "📨 Request sent! Wait for administrator confirmation."
+            admin_text = f"📩 Новый запрос на консультацию:\n👤 {full_name}\n💬 {username_val}\n🕒 {slot}\n\nНажмите кнопку для действия."
+        else:
+            msg = "📨 Запрос отправлен! Ожидайте подтверждения администратора." if lang == 'ru' else "📨 Request sent! Wait for administrator confirmation."
+            admin_text = f"📩 Новый запрос (клиент на сопровождении):\n👤 {full_name}\n💬 {username_val}\n🕒 {slot}\n\nНажмите кнопку для действия."
+
         await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
-        admin_text = f"📩 Новый запрос:\n👤 {full_name}\n💬 {username_val}\n🕒 {slot}\n\nНажмите кнопку для действия."
         try:
             await context.bot.send_message(
                 ADMIN_ID,
@@ -348,8 +382,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if saved_lang:
             context.user_data["lang"] = saved_lang
         return
+
     # === Перенос записи ===
-    if text in (get_main_menu(lang)[1][0], "🔁 Перенос", "🔁 Reschedule"):
+    if text in ("🔁 Перенос", "🔁 Reschedule"):
         row_idx, row, slot = await find_user_booking(user_id)
         if not row_idx:
             msg = "❌ У вас нет записи для переноса." if lang == 'ru' else "❌ You have no booking to reschedule."
@@ -367,6 +402,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cancel_button = [["Отмена" if lang == "ru" else "Cancel"]]
         await update.message.reply_text(ask_msg, reply_markup=ReplyKeyboardMarkup(cancel_button, resize_keyboard=True))
         return
+
     # === Шаг: имя для переноса ===
     if context.user_data.get("step") == "ask_name_reschedule":
         context.user_data["full_name"] = text
@@ -390,6 +426,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(ask_msg, reply_markup=ReplyKeyboardMarkup([[s] for s in free_slots], resize_keyboard=True))
         context.user_data["step"] = "choose_slot_reschedule"
         return
+
     # === Шаг: выбор слота для переноса ===
     if context.user_data.get("step") == "choose_slot_reschedule":
         slot = text.strip()
@@ -452,8 +489,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if saved_lang:
             context.user_data["lang"] = saved_lang
         return
+
     # === Получить ссылку ===
-    if text in (get_main_menu(lang)[2][0], "📎 Получить ссылку", "📎 Get Link"):
+    if text in ("📎 Получить ссылку", "📎 Get Link"):
         row_idx, row, slot = await find_user_booking(user_id)
         if not row_idx:
             msg = "❌ У вас нет активной записи." if lang == 'ru' else "❌ You have no active booking."
@@ -473,8 +511,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         meet_buttons = [["🔗 Получить сейчас" if lang == "ru" else "🔗 Get now", "⏰ За 15 минут до встречи" if lang == "ru" else "⏰ 15 minutes before"]]
         await update.message.reply_text(ask_msg, reply_markup=ReplyKeyboardMarkup(meet_buttons, resize_keyboard=True))
         return
+
     # === Отмена записи ===
-    if text in (get_main_menu(lang)[1][1], "❌ Отмена", "❌ Cancel"):
+    if text in ("❌ Отмена", "❌ Cancel"):
         row_idx, row, slot = await find_user_booking(user_id)
         if not row_idx:
             msg = "❌ У вас нет записи для отмены." if lang == 'ru' else "❌ You have no booking to cancel."
@@ -491,6 +530,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Ошибка уведомления админу при отмене: {e}")
         return
+
     # === Получить сейчас/позже ===
     if text in ("🔗 Получить сейчас", "🔗 Get now", "⏰ За 15 минут до встречи", "⏰ 15 minutes before"):
         choice = "now" if "сейчас" in text or "Get now" in text else "later"
@@ -499,6 +539,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cancel_button = [["Отмена" if lang == "ru" else "Cancel"]]
         await update.message.reply_text(ask_msg, reply_markup=ReplyKeyboardMarkup(cancel_button, resize_keyboard=True))
         return
+
     # === Email для Meet ===
     if "meet_choice" in context.user_data:
         email = text.strip()
@@ -618,6 +659,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 msg = f"⚠️ Ошибка создания события: {e}" if lang == 'ru' else f"⚠️ Error creating event: {e}"
                 await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
             return
+
     msg = "Не понял команду — попробуйте ещё раз." if lang == 'ru' else "Didn't understand the command — try again."
     await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
 
@@ -816,9 +858,9 @@ async def background_jobs(app):
             if remind_flag == "0" and 0 < seconds_to <= 86400:
                 try:
                     reminder_msg = (
-                        f"⏰ Напоминаем! У вас консультация {slot_text}."
+                        f"⏰ Напоминаем! У вас встреча {slot_text}."
                         if user_lang == 'ru' else
-                        f"⏰ Reminder! You have a consultation {slot_text}."
+                        f"⏰ Reminder! You have a meeting {slot_text}."
                     )
                     await app.bot.send_message(int(user_id), reminder_msg)
                     await run_in_thread(sheet.update_cell, i, 9, "1")
@@ -835,8 +877,8 @@ async def background_jobs(app):
                         meet_link = ""
                 if not meet_link:
                     event_body = {
-                        "summary": "Консультация Migrall" if user_lang == 'ru' else "Migrall Consultation",
-                        "description": "Консультация по переезду." if user_lang == 'ru' else "Relocation consultation.",
+                        "summary": "Встреча с клиентом" if user_lang == 'ru' else "Client Meeting",
+                        "description": "Встреча с клиентом на сопровождении." if user_lang == 'ru' else "Client meeting.",
                         "start": {"dateTime": slot_dt.isoformat(), "timeZone": "Europe/Lisbon"},
                         "end": {"dateTime": (slot_dt + datetime.timedelta(hours=1)).isoformat(), "timeZone": "Europe/Lisbon"},
                         "attendees": [{"email": email}],
