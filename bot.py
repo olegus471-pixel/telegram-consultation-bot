@@ -127,11 +127,10 @@ def get_main_menu(lang: str):
     }
     m = ru if lang == "ru" else en
     return [
-        [m["book_intro"]],
-        [m["book_expert"], m["book_client"]],
-        [m["my_booking"], m["reschedule"]],
-        [m["cancel"], m["get_link"]],
-        [m["info"]],
+        [m["book_intro"], m["book_expert"]],
+        [m["book_client"], m["my_booking"]],
+        [m["reschedule"], m["cancel"]],
+        [m["get_link"], m["info"]],
     ]
 
 # ========== Хэндлеры ==========
