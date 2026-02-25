@@ -106,7 +106,8 @@ async def find_user_booking(user_id: int):
 
 def get_main_menu(lang: str):
     ru = {
-        "book_consultation": "📅 Запись на консультацию",
+        "book_intro": "🌟 Запись на вводную консультацию",
+        "book_expert": "📅 Запись на экспертную консультацию",
         "book_client": "🤝 Запись для клиентов",
         "my_booking": "📖 Моя запись",
         "reschedule": "🔁 Перенос",
@@ -115,7 +116,8 @@ def get_main_menu(lang: str):
         "info": "ℹ️ Инфо",
     }
     en = {
-        "book_consultation": "📅 Book Consultation",
+        "book_intro": "🌟 Book Intro Consultation",
+        "book_expert": "📅 Book Expert Consultation",
         "book_client": "🤝 Client Booking",
         "my_booking": "📖 My Booking",
         "reschedule": "🔁 Reschedule",
@@ -123,12 +125,13 @@ def get_main_menu(lang: str):
         "get_link": "📎 Get Link",
         "info": "ℹ️ Info",
     }
-    map_used = ru if lang == "ru" else en
+    m = ru if lang == "ru" else en
     return [
-        [map_used["book_consultation"], map_used["book_client"]],
-        [map_used["my_booking"], map_used["reschedule"]],
-        [map_used["cancel"], map_used["get_link"]],
-        [map_used["info"]],
+        [m["book_intro"]],
+        [m["book_expert"], m["book_client"]],
+        [m["my_booking"], m["reschedule"]],
+        [m["cancel"], m["get_link"]],
+        [m["info"]],
     ]
 
 # ========== Хэндлеры ==========
@@ -212,50 +215,125 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg = "ℹ️ У вас нет активных записей." if lang == 'ru' else "ℹ️ You have no active bookings."
             await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
         return
+
     # === Инфо ===
     if text in ("ℹ️ Инфо", "ℹ️ Info"):
         msg = (
-            "💬 Консультация по легализации в Португалии 🇵🇹 и Испании 🇪🇸\n\n"
-            "Консультация поможет вам разобраться со всеми нюансами переезда и составить четкий план действий.\n\n"
-            "🔹 Что разберем на консультации?\n"
-            "✅ Анализируем именно ваш кейс\n"
-            "✅ Рассматриваем все возможные варианты легализации\n"
-            "✅ Прописываем пошаговый план, включая самостоятельные шаги\n"
-            "✅ Отвечаем на все ваши вопросы\n\n"
-            "💰 Стоимость: 120 €\n"
+            "💬 Консультации по легализации в Португалии 🇵🇹 и Испании 🇪🇸 — два формата под ваш уровень\n\n"
+            "🔹 Вводная консультация\n"
+            "Для тех, кто только начинает разбираться\n"
+            "✅ Краткий разбор вашей ситуации\n"
+            "✅ Основные варианты легализации\n"
+            "✅ Первые шаги и общие требования\n"
+            "✅ Ответы на главные вопросы\n"
+            "💰 60 € / 1 час\n"
+            "Проводит менеджер проекта\n"
+            "Подходит для простых кейсов без сложностей\n\n"
+            "🔹 Экспертная консультация\n"
+            "Для глубокого разбора и готового плана\n"
+            "✅ Детальный анализ именно вашего кейса\n"
+            "✅ Сравнение всех вариантов\n"
+            "✅ Пошаговый план с датами и документами\n"
+            "✅ Разбор рисков и нюансов\n"
+            "✅ Ответы на все вопросы\n"
+            "💰 120 € / 1 час\n"
+            "Проводит основатель проекта\n\n"
+            "📌 Как записаться:\n"
+            "1️⃣ Согласовываем время\n"
+            "2️⃣ Оплачиваете (карта РФ / крипта / IBAN)\n"
+            "3️⃣ Получаете ссылку Google Meet\n"
+            "4️⃣ Проводим консультацию\n"
+            "5️⃣ Остаёмся на связи для уточнений"
+            if lang == 'ru' else
+            "💬 Consultations on legalization in Portugal 🇵🇹 and Spain 🇪🇸 — two formats for your level\n\n"
+            "🔹 Intro Consultation\n"
+            "For those just starting to explore the topic\n"
+            "✅ Brief analysis of your situation\n"
+            "✅ Main legalization options\n"
+            "✅ First steps and general requirements\n"
+            "✅ Answers to key questions\n"
+            "💰 60 € / 1 hour\n"
+            "Conducted by a project manager\n"
+            "Suitable for simple cases without complications\n\n"
+            "🔹 Expert Consultation\n"
+            "For in-depth analysis and a ready-made plan\n"
+            "✅ Detailed analysis of your specific case\n"
+            "✅ Comparison of all options\n"
+            "✅ Step-by-step plan with dates and documents\n"
+            "✅ Risk and nuance breakdown\n"
+            "✅ Answers to all your questions\n"
+            "💰 120 € / 1 hour\n"
+            "Conducted by the project founder\n\n"
+            "📌 How to book:\n"
+            "1️⃣ Agree on a time\n"
+            "2️⃣ Make payment (Russian card / crypto / IBAN)\n"
+            "3️⃣ Receive Google Meet link\n"
+            "4️⃣ Conduct the consultation\n"
+            "5️⃣ Stay in touch for follow-ups"
+        )
+        await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
+        return
+
+    # === Вводная консультация ===
+    if text in ("🌟 Запись на вводную консультацию", "🌟 Book Intro Consultation"):
+        r_idx, r_row, r_slot = await find_user_booking(user_id)
+        if r_idx:
+            msg = f"❌ У вас уже есть активная запись на {r_slot}." if lang == 'ru' else f"❌ You already have an active booking for {r_slot}."
+            await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
+            return
+        context.user_data["step"] = "ask_name"
+        context.user_data["booking_type"] = "intro"
+        ask_msg = (
+            "✏️ Введите ваше имя и фамилию:\n\n"
+            "ℹ️ Время консультации указано по Лиссабону. Слот подтверждается администратором после оплаты.\n\n"
+            "💬 Вводная консультация\n"
+            "Консультация поможет быстро разобраться в теме и понять, с чего начать именно в вашем случае.\n\n"
+            "🔹 Что разберём на консультации?\n"
+            "✅ Кратко анализируем вашу ситуацию\n"
+            "✅ Рассматриваем основные варианты легализации в Португалии\n"
+            "✅ Даём общее понимание процесса и требований\n"
+            "✅ Намечаем первые реальные шаги\n"
+            "✅ Отвечаем на ваши основные вопросы\n\n"
+            "💰 Стоимость: 60 €\n"
             "⏳ Длительность: 1 час\n\n"
-            "*К сумме может быть добавлен НДС 23%\n\n"
+            "📌 Подходит для: тех, кто только начинает разбираться в теме, у кого пока нет сложных обстоятельств "
+            "(запутанные документы, несколько стран, нестандартные кейсы и т.д.)\n\n"
             "📌 Как записаться?\n"
             "1️⃣ Согласовываем удобное время\n"
             "2️⃣ Оплачиваете (перевод на РФ карту, крипта, IBAN в евро)\n"
             "3️⃣ Перед встречей отправляем ссылку (Google Meet)\n"
             "4️⃣ Проводим консультацию\n"
-            "5️⃣ После остаемся на связи для уточняющих вопросов\n\n"
-            "📩 Готовы записаться или остались вопросы? Пишите – поможем!"
+            "5️⃣ После остаёмся на связи для уточняющих вопросов\n\n"
+            "Если позже понадобится глубокий разбор сложного кейса — можно перейти на экспертную консультацию с основателем (120 € / 1 час)."
             if lang == 'ru' else
-            "💬 Consultation on legalization in Portugal 🇵🇹 and Spain 🇪🇸\n\n"
-            "The consultation will help you understand all the nuances of relocation and create a clear action plan.\n\n"
-            "🔹 What will we cover in the consultation?\n"
-            "✅ Analyze your specific case\n"
-            "✅ Consider all possible legalization options\n"
-            "✅ Provide a step-by-step plan, including independent steps\n"
-            "✅ Answer all your questions\n\n"
-            "💰 Cost: 120 €\n"
+            "✏️ Enter your first and last name:\n\n"
+            "ℹ️ Consultation time is in Lisbon time. The slot is confirmed by the administrator after payment.\n\n"
+            "💬 Intro Consultation\n"
+            "The consultation will help you quickly understand the topic and figure out where to start in your specific case.\n\n"
+            "🔹 What will we cover?\n"
+            "✅ Brief analysis of your situation\n"
+            "✅ Main legalization options in Portugal\n"
+            "✅ General understanding of the process and requirements\n"
+            "✅ Outline the first real steps\n"
+            "✅ Answer your main questions\n\n"
+            "💰 Cost: 60 €\n"
             "⏳ Duration: 1 hour\n\n"
-            "*VAT 23% may be added to the amount\n\n"
+            "📌 Suitable for: those just starting to explore the topic, without complex circumstances "
+            "(complicated documents, multiple countries, non-standard cases, etc.)\n\n"
             "📌 How to book?\n"
             "1️⃣ Agree on a convenient time\n"
-            "2️⃣ Make payment (transfer to a Russian card, crypto, IBAN in euros)\n"
+            "2️⃣ Make payment (Russian card, crypto, IBAN in euros)\n"
             "3️⃣ Receive a Google Meet link before the meeting\n"
             "4️⃣ Conduct the consultation\n"
             "5️⃣ Stay in touch for follow-up questions\n\n"
-            "📩 Ready to book or have questions? Write to us – we'll help!"
+            "If you later need an in-depth analysis of a complex case, you can upgrade to an expert consultation with the founder (120 € / 1 hour)."
         )
-        await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
+        cancel_button = [["Отмена" if lang == "ru" else "Cancel"]]
+        await update.message.reply_text(ask_msg, reply_markup=ReplyKeyboardMarkup(cancel_button, resize_keyboard=True))
         return
 
-    # === Запись на консультацию ===
-    if text in ("📅 Запись на консультацию", "📅 Book Consultation"):
+    # === Экспертная консультация ===
+    if text in ("📅 Запись на экспертную консультацию", "📅 Book Expert Consultation"):
         r_idx, r_row, r_slot = await find_user_booking(user_id)
         if r_idx:
             msg = f"❌ У вас уже есть активная запись на {r_slot}." if lang == 'ru' else f"❌ You already have an active booking for {r_slot}."
@@ -265,10 +343,40 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["booking_type"] = "consultation"
         ask_msg = (
             "✏️ Введите ваше имя и фамилию:\n\n"
-            "ℹ️ Время консультации указано по Лиссабону. Слот подтверждается администратором после оплаты."
+            "ℹ️ Время консультации указано по Лиссабону. Слот подтверждается администратором после оплаты.\n\n"
+            "💬 Экспертная консультация\n"
+            "Консультация поможет вам разобраться со всеми нюансами переезда и составить чёткий план действий.\n\n"
+            "🔹 Что разберём на консультации?\n"
+            "✅ Анализируем именно ваш кейс\n"
+            "✅ Рассматриваем все возможные варианты легализации\n"
+            "✅ Прописываем пошаговый план, включая самостоятельные шаги\n"
+            "✅ Отвечаем на все ваши вопросы\n\n"
+            "💰 Стоимость: 120 €\n"
+            "⏳ Длительность: 1 час\n\n"
+            "📌 Как записаться?\n"
+            "1️⃣ Согласовываем удобное время\n"
+            "2️⃣ Оплачиваете (перевод на РФ карту, крипта, IBAN в евро)\n"
+            "3️⃣ Перед встречей отправляем ссылку (Google Meet)\n"
+            "4️⃣ Проводим консультацию\n"
+            "5️⃣ После остаёмся на связи для уточняющих вопросов"
             if lang == 'ru' else
             "✏️ Enter your first and last name:\n\n"
-            "ℹ️ Consultation time is in Lisbon time. The slot is confirmed by the administrator after payment."
+            "ℹ️ Consultation time is in Lisbon time. The slot is confirmed by the administrator after payment.\n\n"
+            "💬 Expert Consultation\n"
+            "The consultation will help you understand all the nuances of relocation and create a clear action plan.\n\n"
+            "🔹 What will we cover?\n"
+            "✅ Analyze your specific case\n"
+            "✅ Consider all possible legalization options\n"
+            "✅ Provide a step-by-step plan, including independent steps\n"
+            "✅ Answer all your questions\n\n"
+            "💰 Cost: 120 €\n"
+            "⏳ Duration: 1 hour\n\n"
+            "📌 How to book?\n"
+            "1️⃣ Agree on a convenient time\n"
+            "2️⃣ Make payment (Russian card, crypto, IBAN in euros)\n"
+            "3️⃣ Receive a Google Meet link before the meeting\n"
+            "4️⃣ Conduct the consultation\n"
+            "5️⃣ Stay in touch for follow-up questions"
         )
         cancel_button = [["Отмена" if lang == "ru" else "Cancel"]]
         await update.message.reply_text(ask_msg, reply_markup=ReplyKeyboardMarkup(cancel_button, resize_keyboard=True))
@@ -355,9 +463,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sheet.update_cell(cell.row, 12, context.user_data.get("lang", "ru"))
         await run_in_thread(write_request)
 
-        if booking_type == "consultation":
+        if booking_type == "intro":
             msg = "📨 Запрос отправлен! Ожидайте подтверждения администратора." if lang == 'ru' else "📨 Request sent! Wait for administrator confirmation."
-            admin_text = f"📩 Новый запрос на консультацию:\n👤 {full_name}\n💬 {username_val}\n🕒 {slot}\n\nНажмите кнопку для действия."
+            admin_text = f"📩 Новый запрос на вводную консультацию:\n👤 {full_name}\n💬 {username_val}\n🕒 {slot}\n\nНажмите кнопку для действия."
+        elif booking_type == "consultation":
+            msg = "📨 Запрос отправлен! Ожидайте подтверждения администратора." if lang == 'ru' else "📨 Request sent! Wait for administrator confirmation."
+            admin_text = f"📩 Новый запрос на экспертную консультацию:\n👤 {full_name}\n💬 {username_val}\n🕒 {slot}\n\nНажмите кнопку для действия."
         else:
             msg = "📨 Запрос отправлен! Ожидайте подтверждения администратора." if lang == 'ru' else "📨 Request sent! Wait for administrator confirmation."
             admin_text = f"📩 Новый запрос (клиент на сопровождении):\n👤 {full_name}\n💬 {username_val}\n🕒 {slot}\n\nНажмите кнопку для действия."
