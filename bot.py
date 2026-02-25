@@ -450,8 +450,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         full_name = context.user_data.get("full_name", "Без имени")
         username_val = f"@{user.username}" if user.username else ""
+
+        # Статусы и текст для админа в зависимости от типа записи
+        if booking_type == "intro":
+            pending_status = "Вводная — ожидает подтверждения"
+            confirmed_status = "Вводная консультация — подтверждено"
+            admin_text = f"📩 Новый запрос на вводную консультацию:\n👤 {full_name}\n💬 {username_val}\n🕒 {slot}\n\nНажмите кнопку для действия."
+        elif booking_type == "consultation":
+            pending_status = "Экспертная — ожидает подтверждения"
+            confirmed_status = "Экспертная консультация — подтверждено"
+            admin_text = f"📩 Новый запрос на экспертную консультацию:\n👤 {full_name}\n💬 {username_val}\n🕒 {slot}\n\nНажмите кнопку для действия."
+        else:
+            pending_status = "Клиент — ожидает подтверждения"
+            confirmed_status = "Клиент (сопровождение) — подтверждено"
+            admin_text = f"📩 Новый запрос (клиент на сопровождении):\n👤 {full_name}\n💬 {username_val}\n🕒 {slot}\n\nНажмите кнопку для действия."
+
         def write_request():
-            sheet.update_cell(cell.row, 3, "Ожидает подтверждения")
+            sheet.update_cell(cell.row, 3, pending_status)
             sheet.update_cell(cell.row, 4, full_name)
             sheet.update_cell(cell.row, 5, username_val)
             sheet.update_cell(cell.row, 6, str(user_id))
@@ -460,17 +475,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 sheet.update_cell(cell.row, 8, "0")
             sheet.update_cell(cell.row, 9, "0")
             sheet.update_cell(cell.row, 12, context.user_data.get("lang", "ru"))
+            # Сохраняем подтверждённый статус в колонку M (13) для использования при подтверждении
+            sheet.update_cell(cell.row, 13, confirmed_status)
         await run_in_thread(write_request)
 
-        if booking_type == "intro":
-            msg = "📨 Запрос отправлен! Ожидайте подтверждения администратора." if lang == 'ru' else "📨 Request sent! Wait for administrator confirmation."
-            admin_text = f"📩 Новый запрос на вводную консультацию:\n👤 {full_name}\n💬 {username_val}\n🕒 {slot}\n\nНажмите кнопку для действия."
-        elif booking_type == "consultation":
-            msg = "📨 Запрос отправлен! Ожидайте подтверждения администратора." if lang == 'ru' else "📨 Request sent! Wait for administrator confirmation."
-            admin_text = f"📩 Новый запрос на экспертную консультацию:\n👤 {full_name}\n💬 {username_val}\n🕒 {slot}\n\nНажмите кнопку для действия."
-        else:
-            msg = "📨 Запрос отправлен! Ожидайте подтверждения администратора." if lang == 'ru' else "📨 Request sent! Wait for administrator confirmation."
-            admin_text = f"📩 Новый запрос (клиент на сопровождении):\n👤 {full_name}\n💬 {username_val}\n🕒 {slot}\n\nНажмите кнопку для действия."
+        msg = "📨 Запрос отправлен! Ожидайте подтверждения администратора." if lang == 'ru' else "📨 Request sent! Wait for administrator confirmation."
 
         await update.message.reply_text(msg, reply_markup=ReplyKeyboardMarkup(get_main_menu(lang), resize_keyboard=True))
         try:
@@ -800,10 +809,12 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
     user_lang = row_values[11] if len(row_values) > 11 else "ru"
     full_name = row_values[3] if len(row_values) > 3 else ""
     username_val = row_values[4] if len(row_values) > 4 else ""
+    # Подтверждённый статус с типом консультации (колонка M=13, индекс 12)
+    confirmed_status = row_values[12] if len(row_values) > 12 and row_values[12].strip() else "Подтверждено"
 
     if action == "confirm":
         try:
-            await run_in_thread(sheet.update_cell, row, 3, "Подтверждено")
+            await run_in_thread(sheet.update_cell, row, 3, confirmed_status)
         except Exception as e:
             logger.error(f"Ошибка записи подтверждения: {e}")
             await query.edit_message_text(f"Ошибка записи подтверждения: {e}")
@@ -857,7 +868,7 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
         return
     if action == "confirm_reschedule":
         try:
-            await run_in_thread(sheet.update_cell, row, 3, "Подтверждено")
+            await run_in_thread(sheet.update_cell, row, 3, confirmed_status)
             def clear_old_row():
                 for c in range(3, 13):
                     sheet.update_cell(old_row, c, "")
@@ -960,7 +971,7 @@ async def background_jobs(app):
         user_id = row[5].strip() if len(row) > 5 else ""
         user_lang = row[11].strip() if len(row) > 11 else "ru"
         event_id = row[6].strip() if len(row) > 6 else ""
-        if status == "Подтверждено" and user_id:
+        if "подтверждено" in status.lower() and user_id:
             slot_dt = parse_slot_datetime(slot_text)
             if not slot_dt:
                 continue
